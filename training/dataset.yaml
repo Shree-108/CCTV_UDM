@@ -1,0 +1,40 @@
+# Uniform classifier dataset + training configuration (used by training/*.py)
+#
+# Put UPPER-BODY crops (use `prepare_dataset.py extract` to make them from CCTV)
+# into the labelled folders below, then run `python training/train.py`.
+sources:
+  uniform: data/uniform           # the striped store shirt: front/side/back, near/far, lit/dim, partial
+  non_uniform: data/non_uniform   # plain black/white, horizontal stripes, checks, prints, jackets,
+                                  # T-shirts, similar striped shirts, customers in black/white
+  uncertain: data/uncertain       # torso mostly hidden, heavy blur, too tiny to judge
+
+output_dir: data/cls              # built split: data/cls/{train,val}/{class}/
+val_split: 0.2
+seed: 42
+# Crops named "<clip>__t<track>__f<frame>.jpg" are grouped by clip+track so the
+# same person never appears in both train and val (prevents inflated scores).
+
+lowres_augment:                   # extra degraded copies (train split only)
+  enabled: true
+  copies_per_image: 1
+
+train:
+  base_model: yolo11n-cls.pt
+  epochs: 60
+  imgsz: 224
+  batch: 32
+  patience: 15
+  # NO rotation / vertical flip: rotating 90 degrees turns vertical stripes into
+  # horizontal ones, which are an explicit NEGATIVE class.
+  degrees: 0.0
+  flipud: 0.0
+  fliplr: 0.5
+  hsv_h: 0.0
+  hsv_s: 0.3
+  hsv_v: 0.4
+  erasing: 0.3                    # simulates partial occlusion
+  scale: 0.3
+
+evaluation:
+  target_uniform_precision: 0.98  # false positives make compliance unreliable
+  subsets_dir: data/validation    # data/validation/<subset>/<true_class>/*.jpg

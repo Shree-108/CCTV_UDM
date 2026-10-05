@@ -1,0 +1,34 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Node / Next.js
+node_modules
+.next/
+.DS_Store
+tsconfig.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime data (uploads, analyses, evidence, database)
+storage/
+
+# Model weights and training output (large, reproducible)
+*.pt
+runs/
+models/uniform/eval/
+models/uniform/eval_baseline/
+data/cls/
+data/unlabeled/
+.claude/
+
+# Labelled crops of real CCTV footage (people) — kept local, never pushed
+data/uniform/*
+data/non_uniform/*
+data/uncertain/*
+data/validation/*
+!data/**/.gitkeep

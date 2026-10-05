@@ -1,0 +1,9 @@
+# ByteTrack tuned for store CCTV analysed at a few frames per second:
+# a long buffer keeps the same ID when a person is briefly hidden.
+tracker_type: bytetrack
+track_high_thresh: 0.4
+track_low_thresh: 0.1
+new_track_thresh: 0.5
+track_buffer: 30        # in ANALYSED frames (~6 s at 5 fps)
+match_thresh: 0.8
+fuse_score: true
