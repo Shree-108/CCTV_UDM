@@ -20,6 +20,8 @@ npm run dev
 
 Open http://localhost:3010.
 
+**Trained model:** the app loads `models/uniform_best.pt`, as configured in `config/uniform_config.yaml`. All paths are relative to the project root. Moving the project to another PC is covered in **[DEPLOYMENT.md](DEPLOYMENT.md)**: required files, model transfer (git / Git LFS), checksum verification and settings.
+
 The ports are 3010/8010, so this app can run next to the original litter app (3000/8000). To change them, set `NEXT_PUBLIC_API_URL` in `.env.local` and `CORS_ORIGINS` in `.env`.
 
 ```bash
@@ -29,7 +31,11 @@ python -m pytest tests          # 19 tests: logic + end-to-end API with real inf
 ## Workflow
 
 1. **Overview.** Shows the latest result, KPIs, recent analyses, model status and alerts.
-2. **Image Analysis / Video Analysis.** Drop a file. The page then shows the file name, size, resolution, duration and frame rate.
+2. **Image Analysis: automatic.** Drop an image. Once the upload completes, the uniform check starts on its own, with no Analyze button. The page shows *Analyzing uniform…* and then the result.
+   - **Single-camera image, or a saved camera/ROI preset:** the result appears with no click.
+   - **Multi-camera DVR image with no saved camera:** click the store-interior tile (or draw a Custom area) and the check starts immediately.
+   - **Changing the area:** use *Change camera / ROI* on the result to adjust the camera or ROI and re-analyse.
+   - **Video Analysis:** drop a file. The page shows the file name, size, resolution, duration and frame rate. Videos keep the steps below.
 3. **Select store interior camera.**
    - The DVR layout (single, 2×2, 1×2, 2×1, 2×3, 3×3, 4×4) is auto-detected from the tile seams.
    - Click the correct tile, or choose **Custom** and drag a rectangle, then **Confirm selection**.
@@ -47,10 +53,12 @@ python -m pytest tests          # 19 tests: logic + end-to-end API with real inf
 
 | Status | Rule |
 |---|---|
-| 🟢 UNIFORM COMPLIANT | ≥ 1 person inside the store ROI is confidently in the approved uniform |
-| 🔴 NO UNIFORM DETECTED | People are inside, their clothing was judged, and nobody is in uniform |
-| 🟡 UNCERTAIN | People are inside but there isn't enough visual evidence |
+| 🟢 COMPLIANT | ≥ 1 person inside the store ROI is confidently in the approved uniform |
+| 🔴 NON-COMPLIANT | People are inside, their clothing was judged, and nobody is in uniform |
+| 🟡 UNCERTAIN — PLEASE VERIFY | People are inside but there isn't enough visual evidence |
 | ⚪ NO PERSON DETECTED | Nobody is inside the store ROI |
+
+This is the default `overall_rule: any_uniform` (staff presence). With `all_uniform` in `config/uniform_config.yaml`, the result is NON-COMPLIANT as soon as any judged person is not in uniform. Each person is also listed individually with their own verdict and confidence (for example *Person 2 → NON-COMPLIANT → 91%*).
 
 ## Pipeline
 
@@ -84,17 +92,19 @@ backend/
   reports/writer.py       JSON / CSV / TXT reports
   database/db.py          SQLite (media, analyses, persons, alerts, analytics)
 frontend/                 reused Sightline shell + UI kit; features/{overview,analysis,alerts,analytics,settings,help}
-training/                 prepare_dataset.py · train.py · evaluate.py · dataset.yaml
-models/person/            yolo11n.pt (auto-downloaded if missing)
-models/uniform/           best.pt after training; eval/report.json shown in Settings
+training/                 prepare_dataset.py · train.py · evaluate.py · register_model.py · dataset.yaml
+config/uniform_config.yaml  model path / version / sha256 / class map / thresholds / image size / device
+models/uniform_best.pt    the trained uniform classifier (tracked in git; see DEPLOYMENT.md)
+models/person/            yolo11n.pt (tracked; downloaded to this path if missing)
+models/uniform/eval/      report.json from training/evaluate.py, shown in Settings
 storage/                  uploads, analyses/<id>/ (annotated media, evidence, reports), database
 ```
 
 The camera layer is modular: `analysis/media.py` produces frames from uploaded files. A live source can be added there later, without touching detection, tracking or compliance.
 
-## ⚠️ The uniform classifier is not trained yet
+## ⚠️ When the trained uniform model is missing
 
-No trained uniform model is included. Until `models/uniform/best.pt` exists, the UI shows **MODEL NOT TRAINED** everywhere a result appears. The analysis then uses a **stripe-pattern baseline**: a hand-built check for regular, vertical, black-and-white stripes on the torso.
+Until `models/uniform_best.pt` exists, the UI shows **MODEL FILE MISSING — restore models/uniform_best.pt** everywhere a result appears. An older copy at `models/uniform/best.pt` is still picked up, with a warning to move it. The analysis then uses a **stripe-pattern baseline**: a hand-built check for regular, vertical, black-and-white stripes on the torso.
 - **What it rejects:** plain, horizontal-striped, checked and coloured shirts in tests.
 - **What it can't do:** it is **not reliable on real, distant CCTV**, and it cannot tell your shirt from a customer's similar striped shirt.
 - **Turning it off:** in *Settings → Advanced → When the uniform model is not trained → disabled*, everyone is reported as UNCERTAIN instead.
@@ -104,6 +114,7 @@ python -m training.prepare_dataset extract --source path/to/cctv_footage_or_refe
 # sort data/unlabeled/*.jpg into data/uniform, data/non_uniform, data/uncertain
 python -m training.train          # group-aware split, low-res/blur augmentation, YOLO-cls
 python -m training.evaluate       # accuracy, precision, recall, F1, confusion matrix, false-uniform rate
+python -m training.register_model --version 1.1.0   # record the new weights' SHA-256 + version in the config
 ```
 
 The reference photos are a starting point only. Collect hundreds of crops per class from **your own cameras**:

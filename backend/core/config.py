@@ -17,8 +17,7 @@ STORAGE = Path(os.environ.get("SU_STORAGE_DIR", ROOT / "storage"))
 UPLOADS = STORAGE / "uploads"
 ANALYSES = STORAGE / "analyses"        # one folder per analysis: annotated media, evidence, reports
 MODELS = Path(os.environ.get("SU_MODELS_DIR", ROOT / "models"))
-PERSON_MODEL = MODELS / "person" / "yolo11n.pt"
-UNIFORM_MODEL = MODELS / "uniform" / "best.pt"
+# Model weight paths + inference defaults live in config/uniform_config.yaml (backend/core/model_config.py)
 UNIFORM_EVAL = MODELS / "uniform" / "eval" / "report.json"
 TRACKER_CFG = ROOT / "backend" / "tracking" / "bytetrack_store.yaml"
 DB_PATH = Path(os.environ.get("SU_DB_PATH", STORAGE / "sightline_uniform.db"))
@@ -31,5 +30,5 @@ MAX_VIDEO_MB = int(os.environ.get("MAX_VIDEO_UPLOAD_MB", "1024"))
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".m4v", ".webm", ".mpg", ".mpeg", ".ts"}
 
-for d in (UPLOADS, ANALYSES, MODELS / "person", MODELS / "uniform"):
+for d in (UPLOADS, ANALYSES, MODELS / "person"):
     d.mkdir(parents=True, exist_ok=True)

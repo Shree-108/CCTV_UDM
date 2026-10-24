@@ -7,6 +7,7 @@ Uploaded media -> selected CCTV tile -> YOLO person detection (+ ByteTrack for v
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import threading
 import time
@@ -20,7 +21,8 @@ import numpy as np
 from backend.analysis import compliance
 from backend.analysis.annotate import caption, draw_people, draw_roi, draw_status, enlarge, fit_width, tile_scale
 from backend.analysis.temporal import PresenceTimeline
-from backend.core.config import ANALYSES, PERSON_MODEL, TRACKER_CFG, UNIFORM_MODEL
+from backend.core.config import ANALYSES, TRACKER_CFG
+from backend.core.model_config import INFERENCE, PERSON_MODEL, uniform_model_path
 from backend.core.settings import CRF
 from backend.database.db import DB
 from backend.detection.grid import AnalysisArea
@@ -30,6 +32,7 @@ from backend.tracking.memory import TrackMemory
 from backend.uniform.classifier import UniformDetector
 
 OUTPUT_MAX_W = 1280
+log = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- models
@@ -47,19 +50,29 @@ class Models:
 
     def get(self, s: dict) -> "Models":
         device = select_device(s["gpu_acceleration"])
-        mtime = UNIFORM_MODEL.stat().st_mtime if UNIFORM_MODEL.exists() else 0
-        key = (device, s["untrained_model_mode"], mtime)
+        path = uniform_model_path()
+        mtime = path.stat().st_mtime if path.exists() else 0
+        key = (device, s["untrained_model_mode"], str(path), mtime)
         with self._lock:
             if key != self._key:
                 try:
                     self.tracker_detector = PersonDetector(PERSON_MODEL, device, TRACKER_CFG)
                     self.image_detector = PersonDetector(PERSON_MODEL, device)
-                    self.uniform = UniformDetector(str(UNIFORM_MODEL), device, s["untrained_model_mode"])
+                    self.uniform = UniformDetector(path, device, s["untrained_model_mode"])
                     self._key, self.error = key, None
                 except Exception as e:  # noqa: BLE001 - surfaced in /api/health
                     self.error = str(e)
                     raise
         return self
+
+    def warmup(self, s: dict) -> None:
+        """One dummy inference at startup so the first real upload is not slowed by model initialisation."""
+        t0 = time.time()
+        with self.image_lock:
+            self.image_detector.detect(np.zeros((480, 640, 3), np.uint8), s["person_confidence"], s["inference_size"])
+            if self.uniform and self.uniform.backend:
+                self.uniform.backend.predict([np.full((96, 64, 3), 127, np.uint8)])
+        log.info("Models warmed up in %.1fs", time.time() - t0)
 
     @property
     def device(self) -> str:
@@ -123,7 +136,7 @@ def analyze_image(db: DB, aid: str, media: dict, area: AnalysisArea, s: dict, mo
     for p in people:    # single image: the frame label is final
         p.smoothed_label, p.smoothed_conf = p.label, p.conf
     labels = [p.label for p in people]
-    status = compliance.decide(labels)
+    status = compliance.decide(labels, INFERENCE["overall_rule"])
     n_u = labels.count("uniform")
     out = _annotated(img, tile, area, people, smoothed=False)
     draw_status(out, compliance.TITLE[status], compliance.COLOR[status],
@@ -157,7 +170,7 @@ def analyze_image(db: DB, aid: str, media: dict, area: AnalysisArea, s: dict, mo
         avg_uniform_conf=float(np.mean(uni)) if uni else None, max_uniform_conf=max(uni) if uni else None,
         processing_sec=round(time.time() - t0, 2), frames_total=1, frames_processed=1, alerts=n_alerts,
         uniform_obs=n_u, non_uniform_obs=labels.count("non_uniform"), uncertain_obs=labels.count("uncertain"),
-        classifier=models.uniform.backend_name, device=models.device,
+        classifier=models.uniform.backend_name, model_version=models.uniform.model_version, device=models.device,
     )
     db.update_analysis(aid, **summary)
     files = write_reports(db, aid, out_dir, annotated=annotated, keyframe=annotated)
@@ -335,7 +348,7 @@ def analyze_video(db: DB, aid: str, media: dict, area: AnalysisArea, s: dict, mo
                           "filename": media["filename"]})
             n_alerts += 1
     db.set_persons(aid, persons)
-    status = compliance.decide(labels)
+    status = compliance.decide(labels, INFERENCE["overall_rule"])
 
     # a confirmed whole-video NO UNIFORM verdict always has evidence, even for clips shorter than the threshold
     if status == compliance.NO_UNIFORM and not _alerts_of(db, aid, "no_uniform") and violation_frame:
@@ -361,7 +374,7 @@ def analyze_video(db: DB, aid: str, media: dict, area: AnalysisArea, s: dict, mo
         frames_processed=processed, processing_fps=round(processed / max(elapsed, 1e-6), 2),
         longest_presence_sec=round(timeline.longest, 2), alerts=n_alerts,
         uniform_obs=obs["uniform"], non_uniform_obs=obs["non_uniform"], uncertain_obs=obs["uncertain"],
-        classifier=uniform.backend_name, device=models.device,
+        classifier=uniform.backend_name, model_version=uniform.model_version, device=models.device,
         error="Stopped by user before the end of the video" if stopped else None,
         live={**(live.snapshot or {}), "segments": [[round(a, 2), round(b, 2)] for a, b in timeline.segments]},
     )

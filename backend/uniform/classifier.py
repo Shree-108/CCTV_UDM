@@ -15,12 +15,16 @@ Backends
 """
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Sequence
 
 import cv2
 import numpy as np
 
-from pathlib import Path as resolve_path
+from backend.core.model_config import MODEL, model_identity, rel, version_label
+
+log = logging.getLogger(__name__)
 
 CLASSES = ("uniform", "non_uniform", "uncertain")
 
@@ -82,18 +86,37 @@ class TrainedClassifier:
 
     def __init__(self, path: str, device: str):
         from ultralytics import YOLO
-        self.model = YOLO(path, task="classify")
+        self.model = YOLO(path, task=MODEL["task"])
+        # check the real network, not the task name (stripped checkpoints carry no task metadata)
+        arch = type(self.model.model).__name__
+        if arch != "ClassificationModel":
+            raise ValueError(f"{Path(path).name} contains a {arch}, but the uniform model must be an Ultralytics "
+                             f"classification model (YOLO-cls, trained with training/train.py)")
+        if self.model.task != "classify":   # .pt without train_args: Ultralytics mis-guesses the task
+            log.warning("%s has no task metadata - using it as a classifier", Path(path).name)
+            self.model.task = "classify"
         self.device = device
-        self.names = {int(k): v for k, v in self.model.names.items()}
+        self.imgsz = int(MODEL["imgsz"])
+        cmap = MODEL["class_map"]
+        names = {int(k): v for k, v in self.model.names.items()}
+        unknown = sorted(set(names.values()) - set(cmap))
+        if unknown:
+            raise ValueError(f"model classes {unknown} are not in class_map of config/uniform_config.yaml")
+        if "uniform" not in {cmap[n] for n in names.values()}:
+            raise ValueError("no model class maps to 'uniform' in config/uniform_config.yaml class_map")
+        self.labels = {i: cmap[n] for i, n in names.items()}   # model index -> app label
 
     def predict(self, crops: list[np.ndarray]) -> list[dict[str, float]]:
         if not crops:
             return []
-        results = self.model.predict(crops, device=self.device, verbose=False, imgsz=224)
+        results = self.model.predict(crops, device=self.device, verbose=False, imgsz=self.imgsz)
         out = []
         for r in results:
             probs = r.probs.data.cpu().numpy()
-            out.append({self.names[i]: float(p) for i, p in enumerate(probs)})
+            d: dict[str, float] = {}
+            for i, p in enumerate(probs):
+                d[self.labels[i]] = d.get(self.labels[i], 0.0) + float(p)
+            out.append(d)
         return out
 
 
@@ -166,30 +189,49 @@ class StripePatternBaseline:
 class UniformDetector:
     MIN_CROP_W = 24  # narrower torsos cannot resolve stripes reliably
 
-    def __init__(self, model_path: str | None, device: str = "cpu", untrained_mode: str = "baseline"):
-        path = resolve_path(model_path) if model_path else None
+    def __init__(self, model_path: str | Path | None, device: str = "cpu", untrained_mode: str = "baseline"):
+        path = Path(model_path) if model_path else None
         self.trained = path is not None and path.exists()
         self.untrained_mode = untrained_mode
+        self.identity = model_identity() if path is not None else None
         if self.trained:
             self.backend = TrainedClassifier(str(path), device)
-        elif untrained_mode == "baseline":
-            self.backend = StripePatternBaseline()
+            log.info("Uniform model loaded: %s (%s) on %s", rel(path), version_label(self.identity), device)
+            if self.identity and self.identity["verified"] is False:
+                log.error("Uniform model checksum MISMATCH: %s is not the approved weights (expected sha256 %s)",
+                          rel(path), self.identity["expected_sha256"])
         else:
-            self.backend = None   # "disabled": no shirt is judged, everyone is UNCERTAIN
+            log.warning("Trained uniform model NOT FOUND at %s - using %s", rel(path) if path else "-",
+                        "stripe-pattern baseline" if untrained_mode == "baseline" else "no classifier (all UNCERTAIN)")
+            # "disabled": no shirt is judged, everyone is UNCERTAIN
+            self.backend = StripePatternBaseline() if untrained_mode == "baseline" else None
 
     @property
     def backend_name(self) -> str:
         return self.backend.name if self.backend else "not-trained"
 
     @property
+    def model_version(self) -> str:
+        if self.trained and self.identity:
+            return version_label(self.identity)
+        return f"{self.backend_name} (trained model missing)"
+
+    @property
     def status(self) -> dict:
+        ident = self.identity or model_identity()
+        base = {"model": ident, "version": self.model_version}
         if self.trained:
-            return {"state": "ready", "label": "Trained classifier", "backend": "trained"}
+            if ident["verified"] is False:
+                return base | {"state": "mismatch", "backend": "trained",
+                               "label": f"WRONG MODEL FILE — {ident['path']} does not match the approved checksum"}
+            return base | {"state": "ready", "label": f"Trained classifier {ident['name']} v{ident['version']}",
+                           "backend": "trained"}
+        missing = f"MODEL FILE MISSING — restore {ident['expected_path']}"
         if self.backend:
-            return {"state": "not_trained", "label": "MODEL NOT TRAINED — stripe-pattern baseline (indicative only)",
-                    "backend": "stripe-baseline"}
-        return {"state": "not_trained", "label": "MODEL NOT TRAINED — uniform classification disabled",
-                "backend": "not-trained"}
+            return base | {"state": "not_trained", "label": f"{missing} (stripe baseline, indicative only)",
+                           "backend": "stripe-baseline"}
+        return base | {"state": "not_trained", "label": f"{missing} (uniform classification disabled)",
+                       "backend": "not-trained"}
 
     BLUR_MIN = 6.0   # Laplacian variance of the torso crop below this -> too blurred
 

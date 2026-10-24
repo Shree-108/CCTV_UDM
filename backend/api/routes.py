@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 from backend.analysis.compliance import TITLE
 from backend.analysis.media import kind_of, new_upload_path, probe
 from backend.analysis.pipeline import analyze_image
-from backend.core.config import MAX_IMAGE_MB, MAX_VIDEO_MB, PERSON_MODEL, UNIFORM_EVAL, UNIFORM_MODEL, UPLOADS
+from backend.core.config import MAX_IMAGE_MB, MAX_VIDEO_MB, UNIFORM_EVAL, UPLOADS
+from backend.core.model_config import INFERENCE, MODEL, PERSON_MODEL, model_identity, rel
 from backend.core.settings import Settings
 from backend.database.db import now_iso
 from backend.detection.grid import LAYOUTS, AnalysisArea, grid_cells, validate_area
@@ -35,9 +36,16 @@ def _404(what: str):
 def health(request: Request):
     s = st(request)
     cfg = s.settings.get()
-    uniform = s.models.uniform.status if s.models.uniform else (
-        {"state": "ready", "label": "Trained classifier", "backend": "trained"} if UNIFORM_MODEL.exists() else
-        {"state": "not_trained", "label": "MODEL NOT TRAINED", "backend": "stripe-baseline" if cfg["untrained_model_mode"] == "baseline" else "not-trained"})
+    if s.models.uniform:
+        uniform = s.models.uniform.status
+    else:   # models failed to load: describe the file without loading it
+        ident = model_identity()
+        uniform = {"state": "not_trained", "backend": "not-loaded", "model": ident, "version": "not loaded",
+                   "label": "Uniform model could not be loaded" if ident["present"]
+                   else f"MODEL FILE MISSING — restore {ident['expected_path']}"}
+    uniform |= {"classes": sorted(set(MODEL["class_map"].values())), "overall_rule": INFERENCE["overall_rule"],
+                "uniform_confidence": cfg["uniform_confidence"], "non_uniform_confidence": cfg["non_uniform_confidence"],
+                "config": "config/uniform_config.yaml"}
     evaluation = None
     if UNIFORM_EVAL.exists():
         import json
@@ -49,7 +57,7 @@ def health(request: Request):
         "status": "ok" if not s.models.error else "degraded",
         "model_error": s.models.error,
         "person_detector": {"state": "ready" if PERSON_MODEL.exists() or s.models.tracker_detector else "missing",
-                            "model": PERSON_MODEL.name},
+                            "model": PERSON_MODEL.name, "path": rel(PERSON_MODEL)},
         "uniform_classifier": uniform,
         "tracking": {"state": "ready", "tracker": "ByteTrack"},
         "gpu": {"available": gpu_available(), "setting": cfg["gpu_acceleration"],

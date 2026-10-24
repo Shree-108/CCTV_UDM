@@ -7,7 +7,7 @@ import { cx } from '../../lib/format'
 // ---------------------------------------------------------------- Button
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'subtle'
 const VARIANTS: Record<Variant, string> = {
-  primary: 'bg-info text-[#03141a] font-semibold hover:brightness-110 border-transparent shadow-[0_0_16px_rgba(34,211,238,0.18)]',
+  primary: 'bg-info text-on-accent font-semibold hover:opacity-90 border-transparent shadow-[var(--glow)]',
   secondary: 'bg-panel-2 text-fg border-line hover:bg-hover hover:border-line-strong',
   ghost: 'bg-transparent text-fg-2 border-transparent hover:bg-hover hover:text-fg',
   danger: 'bg-crit-bg text-crit border-transparent hover:brightness-125',
@@ -160,7 +160,7 @@ export function Toggle({ checked, onChange, label, disabled, description }: { ch
         className={cx('relative mt-0.5 h-[18px] w-8 shrink-0 rounded-full border transition-colors disabled:opacity-40',
           checked ? 'border-info bg-info' : 'border-line-strong bg-panel-2')}
       >
-        <span aria-hidden className={cx('absolute left-0 top-[2px] size-3 rounded-full bg-white transition-transform', checked ? 'translate-x-[15px]' : 'translate-x-[2px]')} />
+        <span aria-hidden className={cx('absolute left-0 top-[2px] size-3 rounded-full transition-transform', checked ? 'translate-x-[15px] bg-on-accent' : 'translate-x-[2px] bg-white')} />
       </button>
     </div>
   )

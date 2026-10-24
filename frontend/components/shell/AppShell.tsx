@@ -4,12 +4,13 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  ArrowRight, Bell, ChevronsLeft, ChevronsRight, CornerDownLeft, Menu, ScanFace, Search, Settings as SettingsIcon, X,
+  ArrowRight, Bell, ChevronsLeft, ChevronsRight, CornerDownLeft, Menu, Search, Settings as SettingsIcon, X,
 } from 'lucide-react'
 import { Api } from '../../api/endpoints'
 import type { Alert, Analysis } from '../../api/types'
 import { useQuery } from '../../hooks/useQuery'
 import { ago, cx } from '../../lib/format'
+import { BRAND, MODULE_NAME } from '../../lib/module'
 import { useApp } from '../../stores/app'
 import { Dot, IconButton, Kbd } from '../ui/primitives'
 import { Drawer, Toaster } from '../ui/overlay'
@@ -27,14 +28,19 @@ function useBadges(): Partial<Record<BadgeKey, number>> {
   }
 }
 
+/** Yatrikart wordmark + the active AI module (lib/module.ts). Logo is white; inverted in light theme. */
 export function Brand({ collapsed }: { collapsed?: boolean }) {
   return (
-    <div className={cx('flex h-16 shrink-0 items-center gap-3', collapsed ? 'justify-center px-0' : 'px-5')}>
-      <div className="flex size-9 items-center justify-center rounded-xl bg-info-bg text-info ring-1 ring-info/40"><ScanFace className="size-5" aria-hidden /></div>
-      {!collapsed && (
-        <div className="min-w-0 leading-tight">
-          <div className="truncate text-[14px] font-bold tracking-[0.12em] text-fg">SIGHTLINE</div>
-          <div className="truncate text-[10px] font-medium uppercase tracking-[0.18em] text-info">Uniform compliance</div>
+    <div className={cx('flex h-16 shrink-0 items-center', collapsed ? 'justify-center px-0' : 'px-5')}>
+      {collapsed ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src="/brand/yatrikart-mark.png" alt={`${BRAND} · ${MODULE_NAME}`} title={`${BRAND} · ${MODULE_NAME}`}
+          className="brand-logo h-6 w-auto select-none" draggable={false} />
+      ) : (
+        <div className="flex min-w-0 flex-col gap-1.5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/brand/yatrikart-wordmark.png" alt={BRAND} className="brand-logo h-[19px] w-auto self-start select-none" draggable={false} />
+          <div className="truncate text-[9.5px] font-semibold uppercase tracking-[0.24em] text-fg-3">{MODULE_NAME}</div>
         </div>
       )}
     </div>
@@ -232,14 +238,15 @@ function Topbar() {
   const h = health.data
   const sysTone = health.error ? 'crit' : !h ? 'neutral' : h.status !== 'ok' ? 'crit' : h.uniform_classifier.state === 'ready' ? 'ok' : 'warn'
   const sysText = health.error ? 'Backend offline' : !h ? 'Checking…' : h.status !== 'ok' ? 'Model error'
-    : h.uniform_classifier.state === 'ready' ? 'All models ready' : 'Uniform model not trained'
+    : h.uniform_classifier.state === 'ready' ? `Uniform model v${h.uniform_classifier.model?.version ?? '?'}`
+      : h.uniform_classifier.state === 'mismatch' ? 'Wrong uniform model file' : 'Uniform model missing'
 
   return (
     <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b border-line bg-bg/90 px-3 backdrop-blur md:px-5">
       <IconButton icon={Menu} label="Open navigation" className="lg:hidden" onClick={() => setMobileNavOpen(true)} />
       <div className="min-w-0">
-        <div className="truncate text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-3">{ALL_NAV.find((n) => n.href === item?.href)?.group ?? 'Sightline'}</div>
-        <div className="truncate text-[13px] font-semibold text-fg">{item?.label ?? 'Uniform Compliance'}</div>
+        <div className="truncate text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-3">{ALL_NAV.find((n) => n.href === item?.href)?.group ?? BRAND}</div>
+        <div className="truncate text-[13px] font-semibold text-fg">{item?.label ?? MODULE_NAME}</div>
       </div>
       <button onClick={() => setPaletteOpen(true)} aria-label="Open search (Ctrl+K)"
         className="mx-auto hidden h-8 w-full max-w-md items-center gap-2 rounded-md border border-line bg-panel px-2.5 text-[12px] text-fg-3 hover:border-line-strong md:flex">
@@ -288,7 +295,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-dvh overflow-hidden bg-bg">
-      <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[70] focus:rounded focus:bg-info focus:px-2 focus:py-1 focus:text-white">Skip to content</a>
+      <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[70] focus:rounded focus:bg-info focus:px-2 focus:py-1 focus:text-on-accent">Skip to content</a>
       <aside className={cx('relative hidden shrink-0 border-r border-line bg-sidebar transition-[width] duration-150 lg:block', sidebarCollapsed ? 'w-[60px]' : 'w-[236px]')}>
         <Sidebar collapsed={sidebarCollapsed} />
         <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}

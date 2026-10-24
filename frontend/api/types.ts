@@ -115,6 +115,7 @@ export interface Analysis {
   area: Area | null
   settings: Settings | null
   classifier: string | null
+  model_version: string | null
   device: string | null
   live: LiveProgress | null
   files: Partial<Record<'annotated' | 'keyframe' | 'report_json' | 'report_csv' | 'report_txt', string>>
@@ -161,13 +162,38 @@ export interface SettingSchema {
 export interface Health {
   status: 'ok' | 'degraded'
   model_error: string | null
-  person_detector: { state: 'ready' | 'missing'; model: string }
-  uniform_classifier: { state: 'ready' | 'not_trained'; label: string; backend: string }
+  person_detector: { state: 'ready' | 'missing'; model: string; path: string }
+  uniform_classifier: {
+    state: 'ready' | 'not_trained' | 'mismatch'
+    label: string
+    backend: string
+    version: string
+    model: ModelIdentity
+    classes: PersonLabel[]
+    overall_rule: 'any_uniform' | 'all_uniform'
+    uniform_confidence: number
+    non_uniform_confidence: number
+    config: string
+  }
   tracking: { state: 'ready'; tracker: string }
   gpu: { available: boolean; setting: string; device: string }
   evaluation: EvaluationReport | null
   queue: number
   live_cctv: 'not_implemented'
+}
+
+/** Which uniform weights file this installation runs (config/uniform_config.yaml). */
+export interface ModelIdentity {
+  name: string
+  version: string
+  status: string | null
+  dataset_version: string | null
+  path: string
+  expected_path: string
+  present: boolean
+  sha256: string | null
+  expected_sha256: string | null
+  verified: boolean | null
 }
 
 export interface EvaluationReport {

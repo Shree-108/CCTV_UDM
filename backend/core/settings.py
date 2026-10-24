@@ -7,27 +7,29 @@ import threading
 from typing import Any
 
 from backend.core.config import SETTINGS_PATH
+from backend.core.model_config import DEVICE_TO_GPU, INFERENCE as D
 
 # key -> (default, type, min, max, advanced, description)
+# Model-related defaults come from config/uniform_config.yaml (inference:).
 SPEC: dict[str, tuple] = {
     # ------------------------------------------------ basic
-    "person_confidence": (0.40, float, 0.05, 0.95, False, "Minimum confidence for a person detection"),
-    "uniform_confidence": (0.70, float, 0.50, 0.99, False, "Minimum probability to call a shirt UNIFORM; weaker results become UNCERTAIN"),
+    "person_confidence": (float(D.get("person_confidence", 0.40)), float, 0.05, 0.95, False, "Minimum confidence for a person detection"),
+    "uniform_confidence": (float(D.get("uniform_confidence", 0.70)), float, 0.50, 0.99, False, "Minimum probability to call a shirt UNIFORM; weaker results become UNCERTAIN"),
     "analysis_fps": (5.0, float, 0.5, 30.0, False, "Video frames analysed per second of footage"),
-    "inference_size": (640, int, 320, 1920, False, "Resolution the selected camera tile is resized to for detection"),
+    "inference_size": (int(D.get("inference_size", 640)), int, 320, 1920, False, "Resolution the selected camera tile is resized to for detection"),
     "temporal_confirmation_frames": (3, int, 1, 15, False, "Uniform votes needed before a tracked person is confirmed as UNIFORM"),
-    "gpu_acceleration": ("auto", str, None, None, False, "auto | on | off"),
+    "gpu_acceleration": (DEVICE_TO_GPU[D["device"]], str, None, None, False, "auto | on | off"),
     "output_video_quality": ("medium", str, None, None, False, "low | medium | high"),
     "absence_alert_seconds": (30.0, float, 3.0, 3600.0, False, "Seconds with people inside but no confirmed uniform before a NO UNIFORM alert"),
     # ------------------------------------------------ advanced
-    "non_uniform_confidence": (0.60, float, 0.50, 0.99, True, "Minimum probability to call a shirt NON-UNIFORM"),
+    "non_uniform_confidence": (float(D.get("non_uniform_confidence", 0.60)), float, 0.50, 0.99, True, "Minimum probability to call a shirt NON-UNIFORM"),
     "frame_skip": (0, int, 0, 120, True, "Analyse every Nth frame (0 = derive from analysis FPS)"),
     "vote_window": (5, int, 1, 30, True, "Recent classifications remembered per tracked person"),
     "presence_gap_tolerance": (3.0, float, 0.0, 30.0, True, "Seconds a confirmed uniform may be hidden (occlusion) without breaking presence"),
     "min_track_observations": (3, int, 1, 50, True, "Tracks seen fewer times are treated as detector noise"),
-    "min_person_height_px": (50, int, 10, 1000, True, "People shorter than this (tile pixels) are UNCERTAIN"),
+    "min_person_height_px": (int(D.get("min_person_height_px", 50)), int, 10, 1000, True, "People shorter than this (tile pixels) are UNCERTAIN"),
     "roi_reference_point": ("bottom_center", str, None, None, True, "bottom_center | center | upper_center"),
-    "untrained_model_mode": ("baseline", str, None, None, True,
+    "untrained_model_mode": (D.get("untrained_model_mode", "baseline"), str, None, None, True,
                              "When no trained uniform model exists: baseline (stripe heuristic, indicative) | disabled (everyone UNCERTAIN)"),
     "low_confidence_alerts": (True, bool, None, None, True, "Raise LOW CONFIDENCE alerts for persistently uncertain people in videos"),
 }

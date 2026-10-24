@@ -63,7 +63,7 @@ def write_reports(db, aid: str, out_dir: Path, annotated: Path | None, keyframe:
             f"Frames processed   {a['frames_processed']} of {a['frames_total']}",
             f"Longest confirmed uniform presence  {_clock(a['longest_presence_sec'])}",
         ]
-    lines += ["", f"Uniform model      {a['classifier']}", "", "PEOPLE", "-" * 46]
+    lines += ["", f"Uniform model      {a.get('model_version') or a['classifier']}", "", "PEOPLE", "-" * 46]
     for p in persons:
         seen = f"  seen {_clock(p['first_seen_sec'])}–{_clock(p['last_seen_sec'])}" if p["first_seen_sec"] is not None else ""
         lines.append(f"Person #{p['track_id']:02d}  {p['label'].replace('_', '-').upper():12s} {p['confidence'] * 100:5.1f}%{seen}")

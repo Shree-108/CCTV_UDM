@@ -17,8 +17,12 @@ __pycache__/
 # Runtime data (uploads, analyses, evidence, database)
 storage/
 
-# Model weights and training output (large, reproducible)
+# Model weights and training output
+# Scratch / intermediate weights are ignored, but the DEPLOYED models are tracked so
+# every clone gets the exact same files (see DEPLOYMENT.md "Model weights").
 *.pt
+!models/uniform_best.pt
+!models/person/yolo11n.pt
 runs/
 models/uniform/eval/
 models/uniform/eval_baseline/
@@ -31,4 +35,5 @@ data/uniform/*
 data/non_uniform/*
 data/uncertain/*
 data/validation/*
+data/reference/
 !data/**/.gitkeep

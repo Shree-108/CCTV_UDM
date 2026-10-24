@@ -44,7 +44,8 @@ def create_app(state: AppState | None = None, preload: bool = True) -> FastAPI:
         app.state.app_state = s
         if preload:
             try:
-                s.models.get(s.settings.get())
+                cfg = s.settings.get()
+                s.models.get(cfg).warmup(cfg)
             except Exception as e:  # noqa: BLE001 - reported by /api/health
                 logging.error("model load failed: %s", e)
         yield

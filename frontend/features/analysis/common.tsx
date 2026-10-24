@@ -98,8 +98,10 @@ export function initialGrid(media: Media, layouts: Layout[]): GridState {
  * Pick the camera tile that shows the store interior: click a tile of the detected layout,
  * or switch to Custom and drag a rectangle. Only this area is sent to the model.
  */
-export function GridSelector({ media, layouts, value, onChange, confirmed }: {
+export function GridSelector({ media, layouts, value, onChange, onPick, confirmed }: {
   media: Media; layouts: Layout[]; value: GridState; onChange: (g: GridState) => void; confirmed: boolean
+  /** Optional: a camera tile was clicked (images use this to start the analysis immediately). */
+  onPick?: (g: GridState) => void
 }) {
   const W = media.width, H = media.height
   const svg = useRef<SVGSVGElement>(null)
@@ -142,7 +144,11 @@ export function GridSelector({ media, layouts, value, onChange, confirmed }: {
           onPointerMove={(e) => { if (drag) { const [x, y] = norm(e); setDrag({ ...drag, x1: x, y1: y }) } }}
           onPointerUp={() => {
             if (!drag) return
-            if (x2 - x1 > 0.03 && y2 - y1 > 0.03) onChange({ layout: 'custom', cell: null, rect: [x1, y1, x2, y2].map((v) => Math.round(v * 1e4) / 1e4) as Rect, label: 'Custom area' })
+            if (x2 - x1 > 0.03 && y2 - y1 > 0.03) {
+              const g: GridState = { layout: 'custom', cell: null, rect: [x1, y1, x2, y2].map((v) => Math.round(v * 1e4) / 1e4) as Rect, label: 'Custom area' }
+              onChange(g)
+              onPick?.(g)
+            }
             setDrag(null)
           }}>
           <defs>
@@ -151,17 +157,21 @@ export function GridSelector({ media, layouts, value, onChange, confirmed }: {
               <rect x={x1 * W} y={y1 * H} width={(x2 - x1) * W} height={(y2 - y1) * H} fill="black" />
             </mask>
           </defs>
-          <rect width={W} height={H} fill="rgba(3,12,16,0.62)" mask="url(#sel-mask)" />
+          <rect width={W} height={H} fill="rgba(0,0,0,0.62)" mask="url(#sel-mask)" />
           {!custom && cells.length > 1 && cells.map((c, i) => {
             const sel = i === value.cell
             return (
-              <g key={i} onClick={() => onChange({ layout: value.layout, cell: i, rect: c, label: `Camera ${i + 1}` })}>
+              <g key={i} onClick={() => {
+                const g = { layout: value.layout, cell: i, rect: c, label: `Camera ${i + 1}` }
+                onChange(g)
+                onPick?.(g)
+              }}>
                 <rect x={c[0] * W} y={c[1] * H} width={(c[2] - c[0]) * W} height={(c[3] - c[1]) * H} fill="transparent"
                   stroke={sel ? 'var(--info)' : 'rgba(255,255,255,0.35)'} strokeWidth={sel ? stroke * 1.6 : 1} />
                 <rect x={c[0] * W + 8} y={c[1] * H + 8} width={font * (sel ? 13.6 : 9.4)} height={font * 1.7} rx={4}
-                  fill={sel ? 'var(--info)' : 'rgba(6,21,29,0.85)'} />
+                  fill={sel ? '#f5f5f5' : 'rgba(10,10,10,0.85)'} />
                 <text x={c[0] * W + 8 + font * 0.5} y={c[1] * H + 8 + font * 1.2} fontSize={font} fontWeight={600} fontFamily="var(--font-mono)"
-                  fill={sel ? '#04161c' : 'rgba(230,242,246,0.8)'}>{`CAMERA ${i + 1}${sel ? ' · SELECTED ✓' : ' · ignored'}`}</text>
+                  fill={sel ? '#0a0a0a' : 'rgba(245,245,245,0.8)'}>{`CAMERA ${i + 1}${sel ? ' · SELECTED ✓' : ' · ignored'}`}</text>
               </g>
             )
           })}
@@ -223,7 +233,7 @@ export function RoiEditor({ media, rect, roi, onChange, onSave, onClear, savedPr
           {/* the selected camera tile, cropped from the full frame */}
           <image href={src} x={-x1 * W} y={-y1 * H} width={W} height={H} preserveAspectRatio="none" />
           {pts.length >= 2 && (
-            <polygon points={pts.map(([x, y]) => `${x * tw},${y * th}`).join(' ')} fill={pts.length >= 3 ? 'rgba(34,211,238,0.14)' : 'none'}
+            <polygon points={pts.map(([x, y]) => `${x * tw},${y * th}`).join(' ')} fill={pts.length >= 3 ? 'rgba(255,255,255,0.14)' : 'none'}
               stroke="var(--info)" strokeWidth={sw} strokeLinejoin="round" strokeDasharray={mode === 'view' ? undefined : '8 5'} />
           )}
           {pts.length >= 3 && mode === 'view' && (
@@ -231,7 +241,7 @@ export function RoiEditor({ media, rect, roi, onChange, onSave, onClear, savedPr
               fill="var(--info)" fontWeight={600} fontFamily="var(--font-mono)">STORE INTERIOR</text>
           )}
           {mode !== 'view' && pts.map(([x, y], i) => (
-            <circle key={i} cx={x * tw} cy={y * th} r={r} fill={mode === 'edit' ? 'var(--info)' : 'var(--warn)'} stroke="#031014" strokeWidth={1.5}
+            <circle key={i} cx={x * tw} cy={y * th} r={r} fill={mode === 'edit' ? 'var(--info)' : 'var(--warn)'} stroke="#0a0a0a" strokeWidth={1.5}
               className={mode === 'edit' ? 'cursor-grab' : undefined}
               onPointerDown={(e) => { if (mode !== 'edit') return; e.stopPropagation(); (e.target as Element).setPointerCapture?.(e.pointerId); setDragIdx(i) }} />
           ))}

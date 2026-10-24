@@ -12,7 +12,7 @@ C = {
     "cyan": (238, 211, 34),          # --info #22d3ee
     "green": (153, 211, 52), "red": (113, 113, 248), "yellow": (36, 191, 251), "gray": (147, 120, 100),
 }
-TEXT = {"uniform": "UNIFORM", "non_uniform": "NON-UNIFORM", "uncertain": "UNCERTAIN"}
+TEXT = {"uniform": "COMPLIANT", "non_uniform": "NON-COMPLIANT", "uncertain": "UNCERTAIN - VERIFY"}
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 

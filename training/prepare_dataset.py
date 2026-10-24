@@ -26,7 +26,8 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from backend.core.config import PERSON_MODEL, TRACKER_CFG  # noqa: E402
+from backend.core.config import TRACKER_CFG  # noqa: E402
+from backend.core.model_config import PERSON_MODEL  # noqa: E402
 from backend.core.settings import Settings  # noqa: E402
 from backend.detection.person import select_device  # noqa: E402
 from backend.uniform.classifier import upper_body_crop, visibility_issue  # noqa: E402

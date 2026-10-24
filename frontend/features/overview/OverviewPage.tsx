@@ -139,9 +139,16 @@ export function RecentList({ rows }: { rows: Analysis[] }) {
 }
 
 export function ModelStatus({ h, id }: { h: Health | undefined; id?: string }) {
-  const rows: [string, string, 'ok' | 'warn' | 'crit' | 'neutral', string?][] = h ? [
-    ['Person detector', h.person_detector.state === 'ready' ? 'Ready' : 'Missing', h.person_detector.state === 'ready' ? 'ok' : 'crit', `YOLO · ${h.person_detector.model}`],
-    ['Uniform classifier', h.uniform_classifier.state === 'ready' ? 'Ready' : 'Not trained', h.uniform_classifier.state === 'ready' ? 'ok' : 'warn', h.uniform_classifier.label],
+  const u = h?.uniform_classifier
+  const rows: [string, string, 'ok' | 'warn' | 'crit' | 'neutral', string?][] = h && u ? [
+    ['Person detector', h.person_detector.state === 'ready' ? 'Ready' : 'Missing', h.person_detector.state === 'ready' ? 'ok' : 'crit', `YOLO · ${h.person_detector.path ?? h.person_detector.model}`],
+    ['Uniform classifier', u.state === 'ready' ? 'Ready' : u.state === 'mismatch' ? 'Wrong file' : 'Missing',
+      u.state === 'ready' ? 'ok' : u.state === 'mismatch' ? 'crit' : 'warn', u.label],
+    ['Model version', u.model?.present ? `v${u.model.version}${u.model.status ? ` · ${u.model.status}` : ''}` : '—', u.model?.present ? (u.model.verified === false ? 'crit' : 'ok') : 'neutral',
+      u.model?.present ? `${u.model.path} · sha256 ${u.model.sha256?.slice(0, 12)}${u.model.verified ? ' ✓ verified' : u.model.verified === false ? ' ✗ mismatch' : ' (not registered)'}`
+        : `expected at ${u.model?.expected_path ?? 'models/uniform_best.pt'}`],
+    ['Thresholds', `${Math.round(u.uniform_confidence * 100)}% / ${Math.round(u.non_uniform_confidence * 100)}%`, 'neutral',
+      `uniform / non-uniform · below → UNCERTAIN · rule ${u.overall_rule.replace('_', ' ')}`],
     ['Tracking', 'Ready', 'ok', h.tracking.tracker],
     ['GPU', h.gpu.available ? 'Available' : 'Not available', h.gpu.available ? 'ok' : 'neutral', `running on ${h.gpu.device.toUpperCase()}`],
     ['Live CCTV', 'Coming soon', 'neutral', 'uploads only in this version'],

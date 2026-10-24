@@ -9,7 +9,7 @@ import { STATUS_META } from '../../components/ui/status'
 export default function HelpPage() {
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Help Center" description="How Sightline decides whether the approved uniform is being worn, and how to get reliable results." />
+      <PageHeader title="Help Center" description="How Yatrikart Uniform Compliance decides whether the approved uniform is being worn, and how to get reliable results." />
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="Workflow" icon={BookOpen}>
           <ol className="flex list-decimal flex-col gap-1.5 pl-5 text-[13px] text-fg-2">
@@ -78,7 +78,7 @@ python -m training.prepare_dataset extract --source path/to/cctv
 # 3. train + evaluate
 python -m training.train
 python -m training.evaluate`}</pre>
-              <p>The trained model is saved to <code className="font-mono text-fg">models/uniform/best.pt</code> and used automatically. Evaluation (precision, recall, F1, confusion matrix, false-uniform rate) appears in Settings → Model evaluation. Prioritise a low <b className="text-fg">false uniform</b> rate: a customer mistaken for staff makes the result unreliable.</p>
+              <p>The trained model is saved to <code className="font-mono text-fg">models/uniform_best.pt</code> (set in <code className="font-mono text-fg">config/uniform_config.yaml</code>) and used automatically. Bump the version there and run <code className="font-mono text-fg">python -m training.register_model</code> so every deployment can verify it runs this exact file. Evaluation (precision, recall, F1, confusion matrix, false-uniform rate) appears in Settings → Model evaluation. Prioritise a low <b className="text-fg">false uniform</b> rate: a customer mistaken for staff makes the result unreliable.</p>
             </div>
           </div>
         </Panel>

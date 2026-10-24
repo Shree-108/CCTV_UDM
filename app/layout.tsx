@@ -2,16 +2,17 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 import { AppProvider } from '@/frontend/stores/app'
 import { AppShell } from '@/frontend/components/shell/AppShell'
+import { BRAND, MODULE_NAME } from '@/frontend/lib/module'
 
 export const metadata: Metadata = {
-  title: { default: 'Sightline | Uniform Compliance', template: '%s · Sightline' },
+  title: { default: `${BRAND} | ${MODULE_NAME}`, template: `%s · ${BRAND} ${MODULE_NAME}` },
   description: 'AI uniform detection and compliance for uploaded CCTV images and videos.',
   icons: { icon: [{ url: '/icon.svg', type: 'image/svg+xml' }] },
 }
 
 export const viewport: Viewport = {
   colorScheme: 'dark light',
-  themeColor: '#06151d',
+  themeColor: '#0a0a0a',
 }
 
 // Applies the saved theme before first paint (prevents a light/dark flash).

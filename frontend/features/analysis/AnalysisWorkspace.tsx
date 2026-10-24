@@ -3,9 +3,10 @@
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
-import { Camera, CheckCircle2, Crop, FileVideo, ImageIcon, Play, RotateCcw, ScanSearch, Upload } from 'lucide-react'
+import { Camera, CheckCircle2, Crop, FileVideo, ImageIcon, Loader2, Play, RotateCcw, ScanSearch, Upload } from 'lucide-react'
+import { url } from '../../api/client'
 import { Api } from '../../api/endpoints'
-import type { Media, MediaKind, Point } from '../../api/types'
+import type { Area, Layout, Media, MediaKind, Point } from '../../api/types'
 import { invalidate, useQuery } from '../../hooks/useQuery'
 import { useApp } from '../../stores/app'
 import { Badge, Button, PageHeader, Panel } from '../../components/ui/primitives'
@@ -24,6 +25,37 @@ const FORMATS: Record<MediaKind | 'any', string[]> = {
   any: ['JPG', 'PNG', 'MP4', 'AVI', 'MOV', 'WEBM'],
 }
 const STEPS = ['Upload', 'Preview', 'Select camera', 'Store ROI', 'Analyze', 'Result']
+const IMAGE_STEPS = ['Upload', 'Analyzing uniform', 'Result']
+
+/**
+ * Area an uploaded image can be analysed with straight away, without asking the user:
+ * the saved camera/ROI preset if it fits this image, else the whole frame of a
+ * single-camera image. null = a multi-camera DVR grid with no saved camera, so the
+ * user must click the store-interior camera first (that click starts the analysis).
+ */
+function autoArea(m: Media, layouts: Layout[], preset: Area | null): Area | null {
+  if (preset && (preset.layout === m.suggested_layout || preset.layout === 'custom')) return preset
+  if (m.suggested_layout === '1x1') return areaFrom(initialGrid(m, layouts), null)
+  return null
+}
+
+function AnalyzingPanel({ media }: { media: Media }) {
+  return (
+    <Panel title="Analyzing uniform…" icon={ScanSearch} subtitle={media.filename}>
+      <div className="flex flex-col items-center gap-3 py-2" role="status" aria-live="polite">
+        <div className="relative flex w-full items-center justify-center overflow-hidden rounded-md border border-line bg-video">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={url(media.preview_url)} alt="Uploaded image being analysed"
+            className="block max-h-[min(50vh,480px)] max-w-full object-contain opacity-60" />
+          <span className="absolute flex items-center gap-2 rounded-md bg-black/75 px-3 py-2 text-[14px] font-semibold text-info">
+            <Loader2 className="size-4 animate-spin" aria-hidden /> Analyzing uniform…
+          </span>
+        </div>
+        <p className="text-[12px] text-fg-3">Detecting people → checking upper-body clothing → deciding compliance</p>
+      </div>
+    </Panel>
+  )
+}
 
 export default function AnalysisWorkspace({ mode }: { mode: MediaKind | 'any' }) {
   const { toast } = useApp()
@@ -42,22 +74,51 @@ export default function AnalysisWorkspace({ mode }: { mode: MediaKind | 'any' })
   const [gridConfirmed, setGridConfirmed] = useState(false)
   const [roi, setRoi] = useState<Point[] | null>(null)
   const [starting, setStarting] = useState(false)
+  const [analyzing, setAnalyzing] = useState<Media | null>(null)   // image analysis in flight
   const preset = settings.data?.roi_preset ?? null
+  const setup = params.get('setup') === '1'   // image: user chose to change camera / ROI and re-analyse
+
+  /** Image analysis is synchronous on the server: show "Analyzing uniform…" until the result exists. */
+  const runImage = async (m: Media, area: Area) => {
+    setAnalyzing(m)
+    try {
+      const a = await Api.analyse(m.id, area)
+      invalidate('overview')
+      router.push(`/analysis/image?analysis=${a.id}`)
+    } catch (e) {
+      setAnalyzing(null)
+      toast({ tone: 'crit', title: 'Uniform analysis failed', body: (e as Error).message })
+      router.push(`/analysis/image?media=${m.id}&setup=1`)
+    }
+  }
+  // keep "Analyzing uniform…" up until the result route is active (no flash of the upload screen)
+  useEffect(() => { setAnalyzing(null) }, [analysisId])
 
   const onFile = async (f: File) => {
     setUploading(true)
     setUploadError(null)
+    let m: Media
     try {
-      const m = await Api.upload(f)
-      if (mode !== 'any' && m.kind !== mode) {
-        toast({ tone: 'info', title: `That is a${m.kind === 'image' ? 'n image' : ' video'}`, body: `Opening ${m.kind} analysis.` })
-      }
-      router.push(`/analysis/${m.kind}?media=${m.id}`)
+      m = await Api.upload(f)   // inference only starts once the upload has completed
     } catch (e) {
       setUploadError(e as Error)
+      return
     } finally {
       setUploading(false)
     }
+    if (mode !== 'any' && m.kind !== mode) {
+      toast({ tone: 'info', title: `That is a${m.kind === 'image' ? 'n image' : ' video'}`, body: `Opening ${m.kind} analysis.` })
+    }
+    if (m.kind === 'image') {
+      try {
+        const [ls, st] = await Promise.all([layouts.data ?? Api.layouts(), settings.data ?? Api.settings()])
+        const area = autoArea(m, ls, st.roi_preset)
+        if (area) return await runImage(m, area)
+      } catch (e) {
+        toast({ tone: 'crit', title: 'Could not start analysis', body: (e as Error).message })
+      }
+    }
+    router.push(`/analysis/${m.kind}?media=${m.id}`)
   }
 
   // new media -> default camera selection (saved preset if it fits this layout, else auto-detected layout)
@@ -75,10 +136,13 @@ export default function AnalysisWorkspace({ mode }: { mode: MediaKind | 'any' })
 
   const step = analysisId ? 5 : !mediaId ? 0 : !gridConfirmed ? 2 : 3
   const kind: MediaKind | 'any' = media?.kind ?? mode
+  const imageFlow = kind === 'image' || (mode === 'image' && !media)
+  const imageStep = analysisId ? 2 : analyzing || uploading ? 1 : 0
   const title = kind === 'video' ? 'Video Analysis' : kind === 'image' ? 'Image Analysis' : 'Upload Analysis'
 
   const start = async () => {
     if (!media || !grid) return
+    if (media.kind === 'image') return runImage(media, areaFrom(grid, roi))
     setStarting(true)
     try {
       const a = await Api.analyse(media.id, areaFrom(grid, roi))
@@ -96,7 +160,7 @@ export default function AnalysisWorkspace({ mode }: { mode: MediaKind | 'any' })
   const notTrained = health.data && health.data.uniform_classifier.state !== 'ready'
   const description = useMemo(() => kind === 'video'
     ? 'Upload a CCTV video → select the store-interior camera → optional ROI → Start Analysis. People are tracked across frames and their uniform is confirmed by temporal voting.'
-    : kind === 'image' ? 'Upload a CCTV image → select the store-interior camera → optional ROI → Analyze. Every person inside the area is checked for the approved uniform.'
+    : kind === 'image' ? 'Upload a CCTV image — the uniform check starts automatically. Every person inside the store area is checked for the approved uniform.'
       : 'Upload a CCTV image or video for uniform compliance analysis.', [kind])
 
   return (
@@ -104,11 +168,14 @@ export default function AnalysisWorkspace({ mode }: { mode: MediaKind | 'any' })
       <PageHeader title={title} description={description}
         actions={(mediaId || analysisId) && <Button variant="ghost" icon={RotateCcw} onClick={reset}>New analysis</Button>} />
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <StepBar steps={STEPS} current={step === 3 && !analysisId ? 3 : step} />
+        {imageFlow && !(mediaId && !analysisId) ? <StepBar steps={IMAGE_STEPS} current={imageStep} />
+          : <StepBar steps={STEPS} current={step === 3 && !analysisId ? 3 : step} />}
         {notTrained && <Link href="/help#training"><Badge tone="warn" dot>{health.data!.uniform_classifier.label}</Badge></Link>}
       </div>
 
-      {analysisId ? (
+      {analyzing ? (
+        <AnalyzingPanel media={analyzing} />
+      ) : analysisId ? (
         <AnalysisView id={analysisId} headerExtra={<Button size="sm" variant="ghost" icon={Upload} onClick={reset}>Analyse another file</Button>} />
       ) : mediaId && mediaQ.error ? (
         <Panel title="Upload CCTV media"><ErrorState error={mediaQ.error} title="Uploaded file not found" action={<Button size="sm" onClick={reset}>Upload again</Button>} /></Panel>
@@ -127,6 +194,21 @@ export default function AnalysisWorkspace({ mode }: { mode: MediaKind | 'any' })
         </Panel>
       ) : !media || !grid || !layouts.data ? (
         <Panel title="Preparing preview"><div className="py-16 text-center text-[13px] text-fg-3">Loading preview…</div></Panel>
+      ) : media.kind === 'image' && !setup ? (
+        // multi-camera image with no saved camera: one click on the store camera starts the analysis
+        <div className="mx-auto w-full max-w-4xl">
+          <Panel title="Select store interior camera" icon={Camera}
+            subtitle="Only the selected camera area is processed — the other grids are ignored.">
+            <div className="mb-3"><MediaInfo media={media} /></div>
+            <p className="mb-2 rounded-md border border-info/30 bg-info-bg px-2.5 py-1.5 text-[12px] text-info">
+              Multi-camera recording detected — click the store-interior camera (or draw a Custom area) and the uniform check starts immediately.
+              Save a camera + ROI once and later uploads are analysed with no click at all.
+            </p>
+            <GridSelector media={media} layouts={layouts.data} value={grid} confirmed={false}
+              onChange={(g) => { setGrid(g); setRoi(null) }}
+              onPick={(g) => runImage(media, areaFrom(g, null))} />
+          </Panel>
+        </div>
       ) : (
         <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
           <Panel title="Select store interior camera" icon={Camera}
@@ -168,7 +250,7 @@ export default function AnalysisWorkspace({ mode }: { mode: MediaKind | 'any' })
                   {' '}<Link href="/settings" className="text-info hover:underline">change</Link></li>}
               </ul>
               <Button variant="primary" icon={Play} className="h-10 w-full text-[14px]" disabled={!gridConfirmed} loading={starting} onClick={start}>
-                {media.kind === 'video' ? 'START ANALYSIS' : 'ANALYZE IMAGE'}
+                {media.kind === 'video' ? 'START ANALYSIS' : 'RE-ANALYZE WITH THIS AREA'}
               </Button>
               {!gridConfirmed && <p className="mt-2 text-center text-[11px] text-fg-3">Confirm the store-interior camera to enable analysis.</p>}
             </Panel>

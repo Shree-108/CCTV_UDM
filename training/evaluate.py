@@ -26,7 +26,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from backend.core.config import UNIFORM_EVAL, UNIFORM_MODEL  # noqa: E402
+from backend.core.config import UNIFORM_EVAL  # noqa: E402
+from backend.core.model_config import uniform_model_path  # noqa: E402
 from backend.core.settings import Settings  # noqa: E402
 from backend.uniform.classifier import CLASSES, StripePatternBaseline, TrainedClassifier  # noqa: E402
 
@@ -107,7 +108,7 @@ def evaluate(model_path: str | None = None, data: str | None = None, baseline: b
         cfg = yaml.safe_load(f)
     st = Settings().get()
     uc, nc = float(st["uniform_confidence"]), float(st["non_uniform_confidence"])
-    model_path = model_path or str(UNIFORM_MODEL)
+    model_path = model_path or str(uniform_model_path())
     if baseline or not Path(model_path).exists():
         if not baseline:
             print(f"No model at {model_path}; evaluating the stripe baseline instead.")

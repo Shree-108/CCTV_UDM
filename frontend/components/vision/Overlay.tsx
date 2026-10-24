@@ -70,7 +70,7 @@ export function ImageOverlay({ src, width, height, boxes = [], polygons, showLab
           }}>
           {polygons?.map((z) => (
             <polygon key={z.key} points={z.points.map(([x, y]) => `${x * width},${y * height}`).join(' ')}
-              fill="rgba(34,211,238,0.12)" stroke={z.color ?? 'var(--info)'} strokeWidth={Math.max(2, width / 320)} strokeLinejoin="round"
+              fill="rgba(255,255,255,0.12)" stroke={z.color ?? 'var(--info)'} strokeWidth={Math.max(2, width / 320)} strokeLinejoin="round"
               strokeDasharray={z.dashed ? '8 5' : undefined}>
               {z.label && <title>{z.label}</title>}
             </polygon>
@@ -78,12 +78,12 @@ export function ImageOverlay({ src, width, height, boxes = [], polygons, showLab
           {showLabels && labels.map((l, i) => l && (
             <g key={i}>
               <rect x={l.x} y={l.y} width={l.w} height={l.h} fill={boxes[i].color} opacity={0.92} rx={2} />
-              <text x={l.x + 4} y={l.y + l.h - 4} fontSize={fontSize} fontFamily="var(--font-mono)" fill="#061015" fontWeight={600}>{l.text}</text>
+              <text x={l.x + 4} y={l.y + l.h - 4} fontSize={fontSize} fontFamily="var(--font-mono)" fill="#0a0a0a" fontWeight={600}>{l.text}</text>
             </g>
           ))}
           {boxes.map((b) => (
             <rect key={b.key} x={b.bbox[0]} y={b.bbox[1]} width={Math.max(1, b.bbox[2] - b.bbox[0])} height={Math.max(1, b.bbox[3] - b.bbox[1])}
-              fill={b.selected ? 'rgba(34,211,238,0.15)' : 'transparent'} stroke={b.color}
+              fill={b.selected ? 'rgba(255,255,255,0.15)' : 'transparent'} stroke={b.color}
               strokeWidth={(b.thin ? 1 : 2) * Math.max(1, width / 900) * (b.selected ? 1.8 : 1)} strokeDasharray={b.dashed ? '5 3' : undefined}
               className={b.onClick ? 'pointer-events-auto cursor-pointer' : undefined} onClick={(e) => { if (b.onClick) { e.stopPropagation(); b.onClick() } }}>
               {b.label && <title>{b.sub ? `${b.label} ${b.sub}` : b.label}</title>}

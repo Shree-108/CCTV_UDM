@@ -1,0 +1,54 @@
+# Uniform model + inference configuration — the single source of truth.
+#
+# All paths are RELATIVE TO THE PROJECT ROOT, so the same file works on every PC.
+# Never put an absolute path (C:/Users/..., Desktop, Downloads, runs/...) here.
+#
+# Overrides (optional, e.g. in .env):
+#   SU_UNIFORM_CONFIG=path/to/other_config.yaml
+#   SU_UNIFORM_MODEL=models/some_other.pt
+#   SU_DEVICE=cpu | cuda | auto
+#
+# Values under `inference:` are the DEFAULTS of the Settings page. A change made in
+# Settings is stored per installation in storage/settings.json; "Reset to defaults"
+# returns to the values below.
+
+model:
+  name: yatrikart-uniform-cls
+  version: "0.2.0"                 # bump whenever models/uniform_best.pt is replaced
+  status: "experimental"                       # e.g. experimental | production
+  dataset_version: "bootstrap-018c9cdd: 4 uniform people (3 photos + 1 CCTV staff, 138 frames), 3 real non-uniform groups (incl. 1 CCTV customer, 78 frames), 9 synthetic patterns"              # what the weights were trained on (written by training scripts / by hand)
+  path: models/uniform_best.pt     # the trained uniform classifier (restore it here)
+  # Older location written by previous versions of training/train.py. Used only if
+  # `path` is missing, with a warning in the log — move the file to `path`.
+  legacy_paths:
+    - models/uniform/best.pt
+  # SHA-256 of the approved weights. Fill it with:  python -m training.register_model
+  # When set, every deployment verifies it has the exact same model file.
+  sha256: "5d785e8bd947bca545dd2c9a4397bdcf876449e831f5195173f2d3f1f1cc54af"
+  task: classify                   # Ultralytics YOLO-cls (training/train.py)
+  imgsz: 224                       # classifier input size used in training
+  # model class name -> application label (uniform | non_uniform | uncertain)
+  class_map:
+    uniform: uniform
+    non_uniform: non_uniform
+    uncertain: uncertain
+
+person_detector:
+  path: models/person/yolo11n.pt   # official COCO model; downloaded here on first run if missing
+
+inference:
+  device: auto                     # auto | cpu | cuda
+  person_confidence: 0.40          # minimum person-detection confidence
+  inference_size: 640              # person-detector input size
+  uniform_confidence: 0.70         # P(uniform) needed for COMPLIANT; below -> UNCERTAIN
+  non_uniform_confidence: 0.60     # P(non_uniform) needed for NON-COMPLIANT; below -> UNCERTAIN
+  min_person_height_px: 50         # smaller people are UNCERTAIN (too far to judge)
+  # Overall store status from the per-person results:
+  #   any_uniform : COMPLIANT when at least one person inside the store area is in uniform
+  #                 (staff-presence rule — customers in the area do not make it fail)
+  #   all_uniform : NON-COMPLIANT when any judged person is not in uniform
+  overall_rule: any_uniform
+  # When the trained model file is missing:
+  #   baseline : stripe-pattern heuristic, clearly labelled "indicative only"
+  #   disabled : nobody is judged, every person is UNCERTAIN — PLEASE VERIFY
+  untrained_model_mode: baseline

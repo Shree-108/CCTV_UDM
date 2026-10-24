@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS analyses (
   duration_sec REAL, processing_sec REAL, frames_total INTEGER, frames_processed INTEGER,
   processing_fps REAL, longest_presence_sec REAL, alerts INTEGER DEFAULT 0,
   uniform_obs INTEGER, non_uniform_obs INTEGER, uncertain_obs INTEGER,
-  area TEXT, settings TEXT, classifier TEXT, device TEXT,
+  area TEXT, settings TEXT, classifier TEXT, model_version TEXT, device TEXT,
   live TEXT,                            -- JSON progress snapshot while running
   files TEXT                            -- JSON {annotated, keyframe, report_json, report_csv, report_txt}
 );
@@ -63,6 +63,10 @@ class DB:
         self._lock = threading.RLock()
         with self._conn() as c:
             c.executescript(SCHEMA)
+            # columns added after the first release
+            cols = {r[1] for r in c.execute("PRAGMA table_info(analyses)")}
+            if "model_version" not in cols:
+                c.execute("ALTER TABLE analyses ADD COLUMN model_version TEXT")
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=15, check_same_thread=False)

@@ -3,7 +3,7 @@
     python -m training.train                 # build split + train + evaluate
     python -m training.train --skip-build    # reuse existing data/cls
 
-The best weights are copied to models/uniform/best.pt, which the
+The best weights are copied to models/uniform_best.pt (config/uniform_config.yaml), which the
 dashboard picks up automatically on next start.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from backend.core.config import UNIFORM_MODEL  # noqa: E402
+from backend.core.model_config import UNIFORM_MODEL  # noqa: E402
 from backend.detection.person import select_device  # noqa: E402
 from training.prepare_dataset import build, load_cfg  # noqa: E402
 
@@ -47,6 +47,7 @@ def main() -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(best, dest)
     print(f"Saved production model -> {dest}")
+    print("Bump model.version in config/uniform_config.yaml, then run: python -m training.register_model")
 
     from training.evaluate import evaluate
     evaluate(str(dest))

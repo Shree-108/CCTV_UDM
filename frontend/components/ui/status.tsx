@@ -6,16 +6,16 @@ import { cx } from '../../lib/format'
 import { Badge, type Tone } from './primitives'
 
 export const STATUS_META: Record<ComplianceStatus, { title: string; short: string; tone: Tone; icon: LucideIcon; color: string }> = {
-  compliant: { title: 'UNIFORM COMPLIANT', short: 'Compliant', tone: 'ok', icon: CheckCircle2, color: 'var(--ok)' },
-  no_uniform: { title: 'NO UNIFORM DETECTED', short: 'No uniform', tone: 'crit', icon: ShieldAlert, color: 'var(--crit)' },
-  uncertain: { title: 'UNCERTAIN', short: 'Uncertain', tone: 'warn', icon: CircleHelp, color: 'var(--warn)' },
+  compliant: { title: 'COMPLIANT', short: 'Compliant', tone: 'ok', icon: CheckCircle2, color: 'var(--ok)' },
+  no_uniform: { title: 'NON-COMPLIANT', short: 'Non-compliant', tone: 'crit', icon: ShieldAlert, color: 'var(--crit)' },
+  uncertain: { title: 'UNCERTAIN — PLEASE VERIFY', short: 'Uncertain', tone: 'warn', icon: CircleHelp, color: 'var(--warn)' },
   no_person: { title: 'NO PERSON DETECTED', short: 'No person', tone: 'neutral', icon: UserX, color: 'var(--fg-3)' },
 }
 
 export const LABEL_META: Record<PersonLabel, { text: string; tone: Tone; color: string }> = {
-  uniform: { text: 'UNIFORM', tone: 'ok', color: 'var(--ok)' },
-  non_uniform: { text: 'NON-UNIFORM', tone: 'crit', color: 'var(--crit)' },
-  uncertain: { text: 'UNCERTAIN', tone: 'warn', color: 'var(--warn)' },
+  uniform: { text: 'COMPLIANT', tone: 'ok', color: 'var(--ok)' },
+  non_uniform: { text: 'NON-COMPLIANT', tone: 'crit', color: 'var(--crit)' },
+  uncertain: { text: 'UNCERTAIN — VERIFY', tone: 'warn', color: 'var(--warn)' },
 }
 
 export function StatusBadgeC({ status, className }: { status: ComplianceStatus | null | undefined; className?: string }) {
@@ -55,7 +55,9 @@ export function StatusHero({ status, message, uniformed, people, compact }: {
 
 export function statusMessage(status: ComplianceStatus, uniformed: number, people: number): string {
   if (status === 'compliant') return `${uniformed} uniformed person${uniformed === 1 ? '' : 's'} detected inside the selected store area.`
-  if (status === 'no_uniform') return 'No uniformed person detected inside the selected store area.'
+  if (status === 'no_uniform') return uniformed
+    ? 'At least one person inside the selected store area is not wearing the approved uniform.'
+    : 'No uniformed person detected inside the selected store area.'
   if (status === 'uncertain') return `${people} person${people === 1 ? '' : 's'} visible, but clothing could not be judged reliably.`
   return 'No person detected inside the selected store area.'
 }

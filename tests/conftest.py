@@ -10,6 +10,9 @@ sys.path.insert(0, str(ROOT))
 _TMP = Path(tempfile.mkdtemp(prefix="su_test_"))
 os.environ["SU_STORAGE_DIR"] = str(_TMP)
 os.environ["SU_DB_PATH"] = str(_TMP / "test.db")
+# Pipeline tests are written against the deterministic stripe baseline (their test media is a
+# synthetic striped patch), so they must not depend on whichever trained weights are installed.
+os.environ["SU_UNIFORM_MODEL"] = str(_TMP / "no_trained_model.pt")
 
 import pytest  # noqa: E402
 

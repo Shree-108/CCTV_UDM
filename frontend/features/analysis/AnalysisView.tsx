@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
-import { Ban, Download, FileText, ImageIcon, ScanSearch, ShieldAlert, Timer, Users } from 'lucide-react'
+import { Ban, Crop, Download, FileText, ImageIcon, ScanSearch, ShieldAlert, Timer, Users } from 'lucide-react'
 import { downloadUrl, url } from '../../api/client'
 import { Api } from '../../api/endpoints'
 import type { AnalysisDetail, ComplianceStatus } from '../../api/types'
@@ -98,14 +98,46 @@ export function AnalysisProgress({ a }: { a: AnalysisDetail }) {
   )
 }
 
+/** First-paint fallback; useFitHeight then measures the real space left in the workspace. */
+const MEDIA_MAX_H = 'max-h-[clamp(240px,calc(100dvh-300px),760px)]'
+
+/**
+ * Largest height that keeps the element inside the visible workspace (the scrolling <main>),
+ * however much the headers above it wrap. Re-measured when the window or workspace resizes.
+ */
+function useFitHeight<T extends HTMLElement>() {
+  const ref = useRef<T>(null)
+  const [h, setH] = useState<number>()
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const scroller = el.closest('main') ?? document.documentElement
+    const fit = () => {
+      const top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+      setH(Math.round(Math.max(240, Math.min(900, scroller.clientHeight - top - 20))))
+    }
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(scroller)                                       // window / workspace resized
+    for (const c of Array.from(scroller.children)) ro.observe(c) // headers above it wrapped or loaded
+    window.addEventListener('resize', fit)
+    return () => { ro.disconnect(); window.removeEventListener('resize', fit) }
+  }, [])
+  return [ref, h] as const
+}
+
 function AnnotatedMedia({ a }: { a: AnalysisDetail }) {
   const ref = useRef<HTMLVideoElement>(null)
   const [err, setErr] = useState(false)
+  const [box, maxH] = useFitHeight<HTMLDivElement>()
   if (a.kind === 'image' || !a.files.annotated) {
     const src = a.files.annotated ?? a.files.keyframe
     return src ? (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img src={url(src)} alt="Annotated analysis result" className="w-full rounded-md border border-line bg-video object-contain" />
+      <div ref={box} className="flex min-w-0 items-center justify-center self-start overflow-hidden rounded-md border border-line bg-video">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={url(src)} alt="Annotated analysis result" style={{ maxHeight: maxH }}
+          className={cx('block h-auto w-auto max-w-full object-contain', MEDIA_MAX_H)} />
+      </div>
     ) : <EmptyState compact title="No annotated output" />
   }
   if (err) {
@@ -117,15 +149,49 @@ function AnnotatedMedia({ a }: { a: AnalysisDetail }) {
     )
   }
   return (
-    // eslint-disable-next-line jsx-a11y/media-has-caption
-    <video ref={ref} data-analysis={a.id} src={url(a.files.annotated)} controls autoPlay muted playsInline preload="auto" onError={() => setErr(true)}
-      className="aspect-video w-full rounded-md border border-line bg-video" />
+    <div ref={box} className="min-w-0 self-start">
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <video ref={ref} data-analysis={a.id} src={url(a.files.annotated)} controls autoPlay muted playsInline preload="auto" onError={() => setErr(true)}
+        style={{ maxHeight: maxH }} className={cx('aspect-video w-full rounded-md border border-line bg-video object-contain', MEDIA_MAX_H)} />
+    </div>
   )
 }
 
 export function seekTo(id: string, t: number) {
   const v = document.querySelector<HTMLVideoElement>(`video[data-analysis="${id}"]`)
   if (v) { v.currentTime = Math.max(0, t - 0.3); void v.play().catch(() => {}); v.scrollIntoView({ block: 'nearest', behavior: 'smooth' }) }
+}
+
+/** Image result: one line per detected person (clothing only, never identity) + overall store status. */
+function PersonVerdicts({ a, status }: { a: AnalysisDetail; status: ComplianceStatus }) {
+  if (!a.persons.length) return null
+  return (
+    <div className="rounded-md border border-line">
+      <ul className="max-h-48 divide-y divide-line overflow-y-auto">
+        {a.persons.map((p) => (
+          <li key={p.track_id} className="flex items-center gap-2 px-2.5 py-1.5 text-[12px]" title={p.note || undefined}>
+            <span className="font-mono text-fg">Person {p.track_id}</span>
+            <span className="text-fg-3" aria-hidden>→</span>
+            <LabelBadge label={p.label} />
+            <span className="ml-auto tabular font-mono" style={{ color: LABEL_META[p.label].color }}>{p.confidence ? pct(p.confidence, 0) : '—'}</span>
+          </li>
+        ))}
+      </ul>
+      <div className="flex items-center gap-2 border-t border-line bg-panel-2/60 px-2.5 py-1.5 text-[12px]">
+        <span className="font-semibold text-fg">Overall</span><span className="text-fg-3" aria-hidden>→</span>
+        <Badge tone={STATUS_META[status].tone} dot>{STATUS_META[status].title}</Badge>
+      </div>
+    </div>
+  )
+}
+
+function ModelLine({ a }: { a: AnalysisDetail }) {
+  return (
+    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[11px]">
+      <dt className="text-fg-3">Analysed</dt><dd className="truncate text-fg-2">{dateTime(a.finished_at ?? a.created_at)}</dd>
+      <dt className="text-fg-3">Model</dt><dd className="truncate font-mono text-fg-2" title={a.model_version ?? a.classifier ?? ''}>{a.model_version ?? a.classifier ?? '—'}</dd>
+    </dl>
+  )
 }
 
 /** Complete result of an analysis: annotated media, status, metrics, people, alerts, downloads. */
@@ -135,12 +201,15 @@ export function AnalysisResult({ a, headerExtra }: { a: AnalysisDetail; headerEx
   return (
     <div className="flex flex-col gap-3">
       <Panel title="Uniform analysis" icon={ScanSearch} subtitle={`${a.filename} · ${a.area?.label ?? ''}${a.area?.roi ? ' + store ROI' : ''} · ${dateTime(a.finished_at ?? a.created_at)}`}
-        actions={<><Badge tone="ok" dot>Analysis complete</Badge>{headerExtra}</>}>
+        actions={<><Badge tone="ok" dot>Analysis complete</Badge>
+          {!video && <Link href={`/analysis/image?media=${a.media_id}&setup=1`}><Button size="sm" variant="ghost" icon={Crop}>Change camera / ROI</Button></Link>}
+          {headerExtra}</>}>
         <div className="mb-3"><StatusBadges uniformed={a.uniformed ?? 0} nonUniform={a.non_uniform ?? 0} uncertain={a.uncertain ?? 0} /></div>
         <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
           <AnnotatedMedia a={a} />
           <div className="flex flex-col gap-3">
             <StatusHero status={status} message={statusMessage(status, a.uniformed ?? 0, a.people ?? 0)} />
+            {!video && <PersonVerdicts a={a} status={status} />}
             <div className="grid grid-cols-2 gap-2">
               <MetricCard label="People detected" value={a.people ?? 0} hint={video ? 'unique tracked people' : 'inside the store area'} />
               <MetricCard label="Uniformed" value={a.uniformed ?? 0} tone="ok" />
@@ -149,12 +218,13 @@ export function AnalysisResult({ a, headerExtra }: { a: AnalysisDetail; headerEx
               <MetricCard label="Uniform confidence" value={a.avg_uniform_conf != null ? pct(a.avg_uniform_conf, 0) : '—'} hint={a.max_uniform_conf != null ? `max ${pct(a.max_uniform_conf, 0)}` : 'no uniform found'} />
               <MetricCard label="Alerts" value={a.alerts} tone={a.alerts ? 'crit' : undefined} />
             </div>
+            <ModelLine a={a} />
             <Downloads a={a} />
             {a.classifier !== 'trained' && (
               <p className="rounded-md border border-warn/30 bg-warn-bg px-2.5 py-2 text-[11px] text-warn">
-                <b>Uniform model not trained.</b> {a.classifier === 'stripe-baseline'
+                <b>Trained uniform model missing.</b> {a.classifier === 'stripe-baseline'
                   ? 'This result uses the stripe-pattern baseline and is indicative only.' : 'Uniform classification was disabled; all people are UNCERTAIN.'}{' '}
-                <Link href="/help#training" className="underline">How to train →</Link>
+                <Link href="/settings#model-status" className="underline">Model status →</Link>
               </p>
             )}
             {a.error && <p className="text-[11px] text-warn">{a.error}</p>}

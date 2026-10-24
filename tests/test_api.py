@@ -32,7 +32,7 @@ def analyse(client, media_id, rect, roi=None, label="Camera 1"):
 def test_health_reports_model_status(client):
     h = client.get("/api/health").json()
     assert h["person_detector"]["state"] == "ready"
-    assert h["uniform_classifier"]["state"] == "not_trained"      # no trained model in the repo
+    assert h["uniform_classifier"]["state"] == "not_trained"      # tests pin SU_UNIFORM_MODEL to a missing file
     assert h["live_cctv"] == "not_implemented"
 
 

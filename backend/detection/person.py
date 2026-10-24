@@ -47,8 +47,9 @@ class Person:
 class PersonDetector:
     def __init__(self, weights: Path, device: str, tracker_cfg: Path | None = None):
         from ultralytics import YOLO
-        # missing weights -> Ultralytics downloads the official model by name
-        self.model = YOLO(str(weights) if weights.exists() else weights.name)
+        # missing official weights -> Ultralytics downloads them to this exact path (not the working directory)
+        weights.parent.mkdir(parents=True, exist_ok=True)
+        self.model = YOLO(str(weights))
         self.device = device
         self.extra = {"half": True} if device.startswith("cuda") else {}
         self.tracker_cfg = str(tracker_cfg) if tracker_cfg else "bytetrack.yaml"
