@@ -95,3 +95,50 @@ These are set in `config/uniform_config.yaml` → `inference:`.
 The Settings page can override these per PC; overrides are saved in `storage/settings.json`. **Reset to defaults** goes back to the config values.
 
 Some people can't be judged reliably: they are too small or far away, cut off, hidden behind someone else, blurred, or the classifier is not confident enough. These people are reported as **UNCERTAIN — PLEASE VERIFY** instead of being forced into compliant or non-compliant. The system classifies only the upper-body clothing crop. It never uses faces or identity.
+
+## Scheduled capture (local test sources)
+
+The backend can capture a frame from each registered camera on a fixed schedule and analyse it with the same pipeline as an uploaded image. Each result is stored with its **store ID, camera ID, capture time and model version**.
+
+**Defaults:** `capture:` in `config/uniform_config.yaml`, editable under Settings → Advanced.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `capture_interval_minutes` | 15 | Slots aligned to the window start: 09:00, 09:15, … |
+| `capture_active_start` / `_end` | 09:00 / 21:00 | Local time of the PC; the end is exclusive, so the last slot is 20:45 (48 per day) |
+| `default_store_id` | STORE-001 | Store/card ID given to new cameras |
+| `capture_enabled` | true | Master switch for scheduled captures |
+| `video_step_seconds` | 60 | Video sources: footage advanced per capture |
+
+**Sources:** for now only **local** test sources can be used, either a folder of images or a video file. Live CCTV (RTSP/NVR) will be added once authorised access and the recorder details are confirmed.
+
+**Guarantees:**
+- One capture at a time per camera.
+- Each slot is captured at most once per camera, including after a restart. A restart catches up the slot in progress but never back-fills older slots.
+- The original frame is always kept, even if analysis fails.
+- Every attempt is recorded with status `done`, `capture_failed` or `analysis_failed`.
+
+To register a camera (the backend must be running):
+
+```bash
+curl -X POST http://127.0.0.1:8010/api/cameras -H "Content-Type: application/json" -d "{\"id\": \"CAM-01\", \"source_type\": \"video\", \"source\": \"D:/footage/store_interior.mp4\"}"
+```
+
+Other camera fields:
+- `store_id`: defaults to `default_store_id`.
+- `name`
+- `area`: the camera tile and store ROI, same format as the analysis API. The default is the whole frame.
+- `enabled`
+
+API endpoints:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/cameras/{id}/capture` | Capture now (manual) |
+| GET | `/api/captures?camera_id=&store_id=&status=&start=&end=` | Capture history |
+| GET | `/api/captures/{id}/image` | Original captured frame |
+| GET | `/api/capture/status` | Schedule status and next slot |
+| GET | `/api/analyses?source=capture&camera_id=CAM-01` | Analyses from captures |
+| PUT / DELETE | `/api/cameras/{id}` | Change or remove a camera. Removing a camera keeps its history. |
+
+To turn the background scheduler off, set `SU_CAPTURE_SCHEDULER=off` in `.env`. Manual captures still work.

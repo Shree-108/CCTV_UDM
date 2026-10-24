@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import threading
 from typing import Any
 
 from backend.core.config import SETTINGS_PATH
-from backend.core.model_config import DEVICE_TO_GPU, INFERENCE as D
+from backend.core.model_config import CAPTURE as C, DEVICE_TO_GPU, INFERENCE as D
 
 # key -> (default, type, min, max, advanced, description)
-# Model-related defaults come from config/uniform_config.yaml (inference:).
+# Model-related defaults come from config/uniform_config.yaml (inference:), capture defaults from (capture:).
 SPEC: dict[str, tuple] = {
     # ------------------------------------------------ basic
     "person_confidence": (float(D.get("person_confidence", 0.40)), float, 0.05, 0.95, False, "Minimum confidence for a person detection"),
@@ -32,6 +33,20 @@ SPEC: dict[str, tuple] = {
     "untrained_model_mode": (D.get("untrained_model_mode", "baseline"), str, None, None, True,
                              "When no trained uniform model exists: baseline (stripe heuristic, indicative) | disabled (everyone UNCERTAIN)"),
     "low_confidence_alerts": (True, bool, None, None, True, "Raise LOW CONFIDENCE alerts for persistently uncertain people in videos"),
+    # ------------------------------------------------ scheduled capture (advanced)
+    "capture_enabled": (bool(C["enabled"]), bool, None, None, True, "Run scheduled captures for enabled cameras"),
+    "capture_interval_minutes": (int(C["interval_minutes"]), int, 1, 1440, True,
+                                 "Minutes between captures; slots are aligned to the start time (e.g. 09:00, 09:15 ...)"),
+    "capture_active_start": (str(C["active_start"]), str, None, None, True, "Daily capture window start, HH:MM local time (inclusive)"),
+    "capture_active_end": (str(C["active_end"]), str, None, None, True, "Daily capture window end, HH:MM local time (exclusive)"),
+    "default_store_id": (str(C["store_id"]), str, None, None, True, "Store/card id given to new cameras"),
+    "video_step_seconds": (float(C["video_step_seconds"]), float, 1.0, 86400.0, True,
+                           "Local video sources: seconds of footage advanced per capture"),
+}
+PATTERNS = {   # string settings that must match a format
+    "capture_active_start": (re.compile(r"^([01]\d|2[0-3]):[0-5]\d$"), "HH:MM (24-hour)"),
+    "capture_active_end": (re.compile(r"^([01]\d|2[0-3]):[0-5]\d$"), "HH:MM (24-hour)"),
+    "default_store_id": (re.compile(r"^[A-Za-z0-9_-]{1,32}$"), "letters, digits, '-' or '_' (max 32)"),
 }
 CHOICES = {
     "gpu_acceleration": ("auto", "on", "off"),
@@ -73,6 +88,8 @@ class Settings:
                 raise ValueError(f"{k} must be between {lo} and {hi}")
             if k in CHOICES and v not in CHOICES[k]:
                 raise ValueError(f"{k} must be one of {', '.join(CHOICES[k])}")
+            if k in PATTERNS and not PATTERNS[k][0].match(v):
+                raise ValueError(f"{k} must be {PATTERNS[k][1]}")
             out[k] = v
         return out
 

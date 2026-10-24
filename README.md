@@ -30,6 +30,8 @@ python -m pytest tests          # 19 tests: logic + end-to-end API with real inf
 
 ## Workflow
 
+> **Scheduled capture:** registered cameras are captured every 15 minutes between 09:00 and 21:00 and analysed automatically. For now only local test sources (an image folder or a video file) are supported. See [DEPLOYMENT.md](DEPLOYMENT.md#scheduled-capture-local-test-sources).
+
 1. **Overview.** Shows the latest result, KPIs, recent analyses, model status and alerts.
 2. **Image Analysis: automatic.** Drop an image. Once the upload completes, the uniform check starts on its own, with no Analyze button. The page shows *Analyzing uniform…* and then the result.
    - **Single-camera image, or a saved camera/ROI preset:** the result appears with no click.

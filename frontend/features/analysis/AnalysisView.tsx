@@ -188,6 +188,11 @@ function PersonVerdicts({ a, status }: { a: AnalysisDetail; status: ComplianceSt
 function ModelLine({ a }: { a: AnalysisDetail }) {
   return (
     <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[11px]">
+      {a.source === 'capture' && <>
+        <dt className="text-fg-3">Source</dt>
+        <dd className="truncate text-fg-2">Camera capture ·{' '}<span className="font-mono">{a.store_id} / {a.camera_id}</span></dd>
+        <dt className="text-fg-3">Captured</dt><dd className="truncate text-fg-2">{dateTime(a.captured_at)}</dd>
+      </>}
       <dt className="text-fg-3">Analysed</dt><dd className="truncate text-fg-2">{dateTime(a.finished_at ?? a.created_at)}</dd>
       <dt className="text-fg-3">Model</dt><dd className="truncate font-mono text-fg-2" title={a.model_version ?? a.classifier ?? ''}>{a.model_version ?? a.classifier ?? '—'}</dd>
     </dl>

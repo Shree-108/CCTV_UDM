@@ -116,6 +116,13 @@ export interface Analysis {
   settings: Settings | null
   classifier: string | null
   model_version: string | null
+  /** 'capture' for scheduled/manual camera captures; null or 'upload' for uploads */
+  source: 'upload' | 'capture' | null
+  store_id: string | null
+  camera_id: string | null
+  capture_id: string | null
+  /** UTC time the frame was taken (captures only) */
+  captured_at: string | null
   device: string | null
   live: LiveProgress | null
   files: Partial<Record<'annotated' | 'keyframe' | 'report_json' | 'report_csv' | 'report_txt', string>>
@@ -146,6 +153,12 @@ export interface Settings {
   roi_reference_point: 'bottom_center' | 'center' | 'upper_center'
   untrained_model_mode: 'baseline' | 'disabled'
   low_confidence_alerts: boolean
+  capture_enabled: boolean
+  capture_interval_minutes: number
+  capture_active_start: string
+  capture_active_end: string
+  default_store_id: string
+  video_step_seconds: number
 }
 
 export interface SettingSchema {

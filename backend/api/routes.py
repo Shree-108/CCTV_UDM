@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import shutil
-import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -12,12 +11,12 @@ from pydantic import BaseModel, Field
 
 from backend.analysis.compliance import TITLE
 from backend.analysis.media import kind_of, new_upload_path, probe
-from backend.analysis.pipeline import analyze_image
+from backend.analysis.runner import AnalysisFailed, start_analysis
 from backend.core.config import MAX_IMAGE_MB, MAX_VIDEO_MB, UNIFORM_EVAL, UPLOADS
 from backend.core.model_config import INFERENCE, MODEL, PERSON_MODEL, model_identity, rel
 from backend.core.settings import Settings
 from backend.database.db import now_iso
-from backend.detection.grid import LAYOUTS, AnalysisArea, grid_cells, validate_area
+from backend.detection.grid import LAYOUTS, grid_cells, validate_area
 from backend.detection.person import gpu_available, select_device
 
 router = APIRouter(prefix="/api")
@@ -177,25 +176,11 @@ def create_analysis(request: Request, body: AnalysisIn):
     s = st(request)
     media = s.db.media(body.media_id) or _404("Media")
     try:
-        validate_area(body.area.rect, body.area.roi)
+        aid = start_analysis(s.db, s.settings, s.models, s.jobs, media, body.area.model_dump())
     except ValueError as e:
         raise HTTPException(422, str(e))
-    cfg = s.settings.get()
-    area = AnalysisArea(rect_norm=body.area.rect, roi=body.area.roi, label=body.area.label,
-                        reference_point=cfg["roi_reference_point"])
-    aid = f"{now_iso()[:10].replace('-', '')}-{uuid.uuid4().hex[:8]}"
-    s.db.add_analysis({"id": aid, "created_at": now_iso(), "media_id": media["id"], "kind": media["kind"],
-                       "filename": media["filename"], "state": "queued", "area": body.area.model_dump(),
-                       "settings": cfg, "duration_sec": media["duration_sec"], "frames_total": media["frames"]})
-    if media["kind"] == "image":
-        s.db.update_analysis(aid, state="running")
-        try:
-            analyze_image(s.db, aid, media, area, cfg, s.models.get(cfg))
-        except Exception as e:  # noqa: BLE001
-            s.db.update_analysis(aid, state="failed", error=str(e))
-            raise HTTPException(500, f"Analysis failed: {e}")
-    else:
-        s.jobs.submit(aid, media, area, cfg)
+    except AnalysisFailed as e:
+        raise HTTPException(500, f"Analysis failed: {e}")
     return analysis_detail(request, aid)
 
 
@@ -210,8 +195,10 @@ def _analysis_out(a: dict) -> dict:
 
 @router.get("/analyses")
 def list_analyses(request: Request, limit: int = 50, offset: int = 0, kind: Optional[str] = None,
-                  status: Optional[str] = None, q: Optional[str] = None):
-    rows, total = st(request).db.analyses(min(limit, 500), offset, kind, status, q)
+                  status: Optional[str] = None, q: Optional[str] = None, camera_id: Optional[str] = None,
+                  store_id: Optional[str] = None, source: Optional[str] = None):
+    rows, total = st(request).db.analyses(min(limit, 500), offset, kind, status, q, camera_id=camera_id,
+                                          store_id=store_id, source=source)
     return {"analyses": [_analysis_out(r) for r in rows], "total": total}
 
 

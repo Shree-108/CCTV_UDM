@@ -45,11 +45,48 @@ CREATE TABLE IF NOT EXISTS alerts (
   confidence REAL, track_id INTEGER, evidence TEXT, filename TEXT,
   state TEXT NOT NULL DEFAULT 'new'     -- new | acknowledged | resolved
 );
+CREATE TABLE IF NOT EXISTS cameras (
+  id TEXT PRIMARY KEY,                  -- e.g. CAM-01
+  store_id TEXT NOT NULL,               -- e.g. STORE-001
+  name TEXT NOT NULL,
+  source_type TEXT NOT NULL,            -- folder | video (local sources; rtsp after CCTV access)
+  source TEXT NOT NULL,                 -- local path of the test source
+  area TEXT,                            -- JSON {rect, roi, label, layout, cell}: camera tile + store ROI
+  enabled INTEGER NOT NULL DEFAULT 1,
+  cursor REAL NOT NULL DEFAULT 0,       -- folder: next image index | video: next position (s)
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS captures (
+  id TEXT PRIMARY KEY,
+  camera_id TEXT NOT NULL, store_id TEXT NOT NULL,
+  captured_at TEXT NOT NULL,            -- UTC ISO time the frame was taken
+  slot_at TEXT,                         -- scheduled slot (UTC ISO); NULL for manual captures
+  trigger TEXT NOT NULL,                -- schedule | manual
+  status TEXT NOT NULL,                 -- running | done | capture_failed | analysis_failed
+  error TEXT,
+  source_ref TEXT,                      -- which file / video position the frame came from
+  frame_hash TEXT,                      -- 64-bit dHash (hex) of the frame
+  similar_to_previous INTEGER,          -- 1 if nearly identical to this camera's previous frame
+  media_id TEXT, analysis_id TEXT,
+  duration_ms INTEGER
+);
 CREATE INDEX IF NOT EXISTS ix_analyses_created ON analyses(created_at);
 CREATE INDEX IF NOT EXISTS ix_alerts_created ON alerts(created_at);
+CREATE INDEX IF NOT EXISTS ix_captures_camera ON captures(camera_id, captured_at);
 """
 
+# Columns added after the first release (additive migrations, applied on start-up).
+ANALYSIS_COLUMNS = {
+    "model_version": "TEXT",
+    "source": "TEXT",          # upload | capture   (NULL = upload, rows created before captures existed)
+    "store_id": "TEXT",
+    "camera_id": "TEXT",
+    "capture_id": "TEXT",
+    "captured_at": "TEXT",     # UTC ISO time the frame was taken (captures); NULL for uploads
+}
+
 JSON_COLS = {"area", "settings", "live", "files"}
+CAMERA_COLS = {"id", "store_id", "name", "source_type", "source", "area", "enabled", "cursor"}
 
 
 def now_iso() -> str:
@@ -63,10 +100,11 @@ class DB:
         self._lock = threading.RLock()
         with self._conn() as c:
             c.executescript(SCHEMA)
-            # columns added after the first release
             cols = {r[1] for r in c.execute("PRAGMA table_info(analyses)")}
-            if "model_version" not in cols:
-                c.execute("ALTER TABLE analyses ADD COLUMN model_version TEXT")
+            for col, typ in ANALYSIS_COLUMNS.items():
+                if col not in cols:
+                    c.execute(f"ALTER TABLE analyses ADD COLUMN {col} {typ}")
+            c.execute("CREATE INDEX IF NOT EXISTS ix_analyses_camera ON analyses(camera_id, created_at)")
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=15, check_same_thread=False)
@@ -112,12 +150,14 @@ class DB:
             return self._row(c.execute("SELECT * FROM analyses WHERE id=?", (aid,)).fetchone())
 
     def analyses(self, limit: int = 50, offset: int = 0, kind: str | None = None, status: str | None = None,
-                 q: str | None = None, start: str | None = None) -> tuple[list[dict], int]:
+                 q: str | None = None, start: str | None = None, camera_id: str | None = None,
+                 store_id: str | None = None, source: str | None = None) -> tuple[list[dict], int]:
         where, args = ["1=1"], []
-        if kind:
-            where.append("kind=?"); args.append(kind)
-        if status:
-            where.append("status=?"); args.append(status)
+        for col, val in (("kind", kind), ("status", status), ("camera_id", camera_id), ("store_id", store_id)):
+            if val:
+                where.append(f"{col}=?"); args.append(val)
+        if source:
+            where.append("COALESCE(source, 'upload')=?"); args.append(source)
         if q:
             where.append("filename LIKE ?"); args.append(f"%{q}%")
         if start:
@@ -183,6 +223,96 @@ class DB:
 
     def set_alert_state(self, alert_id: int, state: str) -> None:
         self._write("UPDATE alerts SET state=? WHERE id=?", (state, alert_id))
+
+    # ------------------------------------------------------------------ cameras
+    def cameras(self) -> list[dict]:
+        with self._conn() as c:
+            return [self._camera(r) for r in c.execute("SELECT * FROM cameras ORDER BY store_id, id")]
+
+    def camera(self, cam_id: str) -> dict | None:
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM cameras WHERE id=?", (cam_id,)).fetchone()
+        return self._camera(r) if r else None
+
+    @staticmethod
+    def _camera(r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["area"] = json.loads(d["area"]) if d.get("area") else None
+        d["enabled"] = bool(d["enabled"])
+        return d
+
+    def upsert_camera(self, cam: dict) -> None:
+        """Insert or update; unknown keys are ignored. `area` is stored as JSON."""
+        cam = {k: v for k, v in cam.items() if k in CAMERA_COLS}
+        if "area" in cam:
+            cam["area"] = json.dumps(cam["area"]) if cam["area"] is not None else None
+        if "enabled" in cam:
+            cam["enabled"] = int(bool(cam["enabled"]))
+        now = now_iso()
+        with self._lock, self._conn() as c:
+            exists = c.execute("SELECT 1 FROM cameras WHERE id=?", (cam["id"],)).fetchone()
+            if exists:
+                sets = {k: v for k, v in cam.items() if k != "id"} | {"updated_at": now}
+                c.execute(f"UPDATE cameras SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?",
+                          [*sets.values(), cam["id"]])
+            else:
+                row = cam | {"created_at": now, "updated_at": now}
+                c.execute(f"INSERT INTO cameras ({','.join(row)}) VALUES ({','.join('?' * len(row))})",
+                          list(row.values()))
+
+    def set_camera_cursor(self, cam_id: str, cursor: float) -> None:
+        self._write("UPDATE cameras SET cursor=? WHERE id=?", (cursor, cam_id))
+
+    def delete_camera(self, cam_id: str) -> None:
+        """Removes the camera only; its captures and analyses are kept as history."""
+        self._write("DELETE FROM cameras WHERE id=?", (cam_id,))
+
+    # ------------------------------------------------------------------ captures
+    def add_capture(self, cap: dict) -> None:
+        self._write(f"INSERT INTO captures ({','.join(cap)}) VALUES ({','.join('?' * len(cap))})", list(cap.values()))
+
+    def update_capture(self, cap_id: str, **fields: Any) -> None:
+        if fields:
+            self._write(f"UPDATE captures SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                        [*fields.values(), cap_id])
+
+    def capture(self, cap_id: str) -> dict | None:
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM captures WHERE id=?", (cap_id,)).fetchone()
+        return dict(r) if r else None
+
+    def captures(self, limit: int = 100, offset: int = 0, camera_id: str | None = None, store_id: str | None = None,
+                 status: str | None = None, start: str | None = None, end: str | None = None) -> tuple[list[dict], int]:
+        where, args = ["1=1"], []
+        for col, val in (("camera_id", camera_id), ("store_id", store_id), ("status", status)):
+            if val:
+                where.append(f"{col}=?"); args.append(val)
+        if start:
+            where.append("captured_at>=?"); args.append(start)
+        if end:
+            where.append("captured_at<?"); args.append(end)
+        w = " AND ".join(where)
+        with self._conn() as c:
+            total = c.execute(f"SELECT COUNT(*) FROM captures WHERE {w}", args).fetchone()[0]
+            rows = c.execute(f"SELECT * FROM captures WHERE {w} ORDER BY captured_at DESC, id DESC LIMIT ? OFFSET ?",
+                             [*args, limit, offset]).fetchall()
+        return [dict(r) for r in rows], total
+
+    def last_capture(self, cam_id: str) -> dict | None:
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM captures WHERE camera_id=? AND frame_hash IS NOT NULL "
+                          "ORDER BY captured_at DESC, id DESC LIMIT 1", (cam_id,)).fetchone()
+        return dict(r) if r else None
+
+    def capture_slot_taken(self, cam_id: str, slot_at: str) -> bool:
+        """True if this camera already has a capture for this scheduled slot (no duplicates after restarts)."""
+        with self._conn() as c:
+            return c.execute("SELECT 1 FROM captures WHERE camera_id=? AND slot_at=?",
+                             (cam_id, slot_at)).fetchone() is not None
+
+    def interrupt_captures(self) -> None:
+        self._write("UPDATE captures SET status='capture_failed', error='Server restarted during capture' "
+                    "WHERE status='running'")
 
     # ------------------------------------------------------------------ analytics
     def analytics(self, start: str | None = None) -> dict:

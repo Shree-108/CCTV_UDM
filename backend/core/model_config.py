@@ -59,6 +59,13 @@ def load() -> dict[str, Any]:
     if inf["device"] not in DEVICE_TO_GPU:
         raise ValueError(f"{CONFIG_PATH.name}: inference.device must be auto, cpu or cuda")
     inf.setdefault("overall_rule", "any_uniform")
+    cap = cfg.setdefault("capture", {})
+    cap.setdefault("enabled", True)
+    cap.setdefault("store_id", "STORE-001")
+    cap.setdefault("interval_minutes", 15)
+    cap.setdefault("active_start", "09:00")
+    cap.setdefault("active_end", "21:00")
+    cap.setdefault("video_step_seconds", 60)
     if inf["overall_rule"] not in ("any_uniform", "all_uniform"):
         raise ValueError(f"{CONFIG_PATH.name}: inference.overall_rule must be any_uniform or all_uniform")
     return cfg
@@ -67,6 +74,7 @@ def load() -> dict[str, Any]:
 CFG = load()
 MODEL = CFG["model"]
 INFERENCE = CFG["inference"]
+CAPTURE = CFG["capture"]
 PERSON_MODEL = _project_path(CFG["person_detector"]["path"])
 UNIFORM_MODEL = _project_path(os.environ.get("SU_UNIFORM_MODEL") or MODEL["path"])   # canonical location
 

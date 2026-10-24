@@ -20,6 +20,9 @@ const LABELS: Partial<Record<keyof Settings, string>> = {
   frame_skip: 'Frame skip', vote_window: 'Vote window', presence_gap_tolerance: 'Occlusion tolerance', min_track_observations: 'Min. track observations',
   min_person_height_px: 'Min. person height', roi_reference_point: 'ROI reference point', untrained_model_mode: 'When the uniform model is not trained',
   low_confidence_alerts: 'Low-confidence alerts',
+  capture_enabled: 'Scheduled capture', capture_interval_minutes: 'Capture interval (minutes)',
+  capture_active_start: 'Capture window start (HH:MM)', capture_active_end: 'Capture window end (HH:MM)',
+  default_store_id: 'Default store ID', video_step_seconds: 'Video source step (s)',
 }
 
 export default function SettingsPage() {

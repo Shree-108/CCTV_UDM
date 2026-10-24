@@ -13,6 +13,8 @@ os.environ["SU_DB_PATH"] = str(_TMP / "test.db")
 # Pipeline tests are written against the deterministic stripe baseline (their test media is a
 # synthetic striped patch), so they must not depend on whichever trained weights are installed.
 os.environ["SU_UNIFORM_MODEL"] = str(_TMP / "no_trained_model.pt")
+# No background scheduler in tests: scheduling is tested by calling CaptureService.tick(now) directly.
+os.environ["SU_CAPTURE_SCHEDULER"] = "off"
 
 import pytest  # noqa: E402
 

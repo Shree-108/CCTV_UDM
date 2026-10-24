@@ -52,3 +52,13 @@ inference:
   #   baseline : stripe-pattern heuristic, clearly labelled "indicative only"
   #   disabled : nobody is judged, every person is UNCERTAIN — PLEASE VERIFY
   untrained_model_mode: baseline
+
+# Scheduled capture (Phase 2 - local sources only until CCTV access is authorised).
+# These are the DEFAULTS of the Settings page (Settings -> Advanced).
+capture:
+  enabled: true                    # master switch; each camera must also be enabled
+  store_id: STORE-001              # default store/card id for new cameras
+  interval_minutes: 15             # slots aligned to active_start: 09:00, 09:15, 09:30 ...
+  active_start: "09:00"            # local time of this PC (inclusive)
+  active_end: "21:00"              # local time (exclusive): the last capture is 20:45
+  video_step_seconds: 60           # local video sources: footage advanced per capture
