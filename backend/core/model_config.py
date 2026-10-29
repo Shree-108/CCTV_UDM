@@ -66,6 +66,12 @@ def load() -> dict[str, Any]:
     cap.setdefault("active_start", "09:00")
     cap.setdefault("active_end", "21:00")
     cap.setdefault("video_step_seconds", 60)
+    ext = cfg.setdefault("extraction", {})
+    ext.setdefault("default_interval_seconds", 30)
+    ext.setdefault("default_strategy", "random_segments")
+    ext.setdefault("default_sample_count", 4)
+    ext.setdefault("image_format", "png")
+    ext.setdefault("max_frames", 5000)
     if inf["overall_rule"] not in ("any_uniform", "all_uniform"):
         raise ValueError(f"{CONFIG_PATH.name}: inference.overall_rule must be any_uniform or all_uniform")
     return cfg
@@ -75,6 +81,7 @@ CFG = load()
 MODEL = CFG["model"]
 INFERENCE = CFG["inference"]
 CAPTURE = CFG["capture"]
+EXTRACTION = CFG["extraction"]
 PERSON_MODEL = _project_path(CFG["person_detector"]["path"])
 UNIFORM_MODEL = _project_path(os.environ.get("SU_UNIFORM_MODEL") or MODEL["path"])   # canonical location
 

@@ -8,7 +8,7 @@ import threading
 from typing import Any
 
 from backend.core.config import SETTINGS_PATH
-from backend.core.model_config import CAPTURE as C, DEVICE_TO_GPU, INFERENCE as D
+from backend.core.model_config import CAPTURE as C, DEVICE_TO_GPU, EXTRACTION as E, INFERENCE as D
 
 # key -> (default, type, min, max, advanced, description)
 # Model-related defaults come from config/uniform_config.yaml (inference:), capture defaults from (capture:).
@@ -42,6 +42,16 @@ SPEC: dict[str, tuple] = {
     "default_store_id": (str(C["store_id"]), str, None, None, True, "Store/card id given to new cameras"),
     "video_step_seconds": (float(C["video_step_seconds"]), float, 1.0, 86400.0, True,
                            "Local video sources: seconds of footage advanced per capture"),
+    # ------------------------------------------------ frame extraction (advanced)
+    "extraction_default_interval_seconds": (float(E["default_interval_seconds"]), float, 1.0, 86400.0, True,
+                                            "Default interval offered on the Frame Extraction page (seconds)"),
+    "extraction_default_strategy": (str(E["default_strategy"]), str, None, None, True,
+                                    "Default sampling for uploaded videos: random_segments (random across video) | interval | random"),
+    "extraction_default_sample_count": (int(E["default_sample_count"]), int, 1, 1000, True,
+                                        "Default number of screenshots for the random strategies"),
+    "extraction_image_format": (str(E["image_format"]), str, None, None, True,
+                                "png (lossless, exact decoded pixels) | jpg (smaller, quality 95)"),
+    "extraction_max_frames": (int(E["max_frames"]), int, 1, 100000, True, "Largest number of frames one extraction job may produce"),
 }
 PATTERNS = {   # string settings that must match a format
     "capture_active_start": (re.compile(r"^([01]\d|2[0-3]):[0-5]\d$"), "HH:MM (24-hour)"),
@@ -53,6 +63,8 @@ CHOICES = {
     "output_video_quality": ("low", "medium", "high"),
     "roi_reference_point": ("bottom_center", "center", "upper_center"),
     "untrained_model_mode": ("baseline", "disabled"),
+    "extraction_image_format": ("png", "jpg"),
+    "extraction_default_strategy": ("random_segments", "interval", "random"),
 }
 CRF = {"low": 32, "medium": 26, "high": 20}
 

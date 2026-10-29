@@ -62,3 +62,13 @@ capture:
   active_start: "09:00"            # local time of this PC (inclusive)
   active_end: "21:00"              # local time (exclusive): the last capture is 20:45
   video_step_seconds: 60           # local video sources: footage advanced per capture
+
+# Frame extraction from uploaded videos (Frame Extraction page).
+# These are the DEFAULTS of the Settings page (Settings -> Advanced).
+extraction:
+  default_strategy: random_segments  # random_segments = N screenshots, one random frame from each equal part of the video
+                                   # | interval (fixed interval) | random (N random frames from the whole video)
+  default_sample_count: 4          # screenshots per video for the random strategies (the initial frame is extra and off by default)
+  default_interval_seconds: 30     # prototype testing; 900 (15 min) matches scheduled monitoring
+  image_format: png                # png = lossless (pixels exactly as decoded) | jpg = smaller files (quality 95)
+  max_frames: 5000                 # refuse a job that would extract more frames than this

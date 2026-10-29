@@ -23,6 +23,9 @@ const LABELS: Partial<Record<keyof Settings, string>> = {
   capture_enabled: 'Scheduled capture', capture_interval_minutes: 'Capture interval (minutes)',
   capture_active_start: 'Capture window start (HH:MM)', capture_active_end: 'Capture window end (HH:MM)',
   default_store_id: 'Default store ID', video_step_seconds: 'Video source step (s)',
+  extraction_default_interval_seconds: 'Frame extraction: default interval (s)',
+  extraction_default_strategy: 'Frame extraction: default sampling', extraction_default_sample_count: 'Frame extraction: screenshots per video',
+  extraction_image_format: 'Frame extraction: image format', extraction_max_frames: 'Frame extraction: max frames per job',
 }
 
 export default function SettingsPage() {

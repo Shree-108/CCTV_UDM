@@ -13,6 +13,8 @@ tsconfig.tsbuildinfo
 __pycache__/
 *.pyc
 .pytest_cache/
+.venv/
+venv/
 
 # Runtime data (uploads, analyses, evidence, database)
 storage/

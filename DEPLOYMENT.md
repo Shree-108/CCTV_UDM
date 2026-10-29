@@ -16,7 +16,7 @@ Everything the app needs is inside the project folder. No path depends on the PC
 
 ```bash
 # 1. clone / copy the project
-git clone <repo-url> && cd YK_CCTV_U_D_M
+git clone https://github.com/Shree-108/CCTV_UDM.git && cd CCTV_UDM
 git lfs pull                                  # only if the model is stored with Git LFS
 
 # 2. install dependencies (Python 3.10+; Node 20+)
@@ -142,3 +142,156 @@ API endpoints:
 | PUT / DELETE | `/api/cameras/{id}` | Change or remove a camera. Removing a camera keeps its history. |
 
 To turn the background scheduler off, set `SU_CAPTURE_SCHEDULER=off` in `.env`. Manual captures still work.
+
+## Frame extraction from uploaded videos
+
+Open **Frame Extraction** in the sidebar (`/extract`), upload a video, choose how to sample it, and click **EXTRACT FRAMES**. No model is run; frames are saved exactly as decoded.
+
+**Sampling strategies** (the strategy and its settings are recorded on the job and on every manifest row):
+- **Random across video (default, `random_segments`):** the video is split into `sample_count` (default **4**) equal parts and one random frame is taken from each, with `random.Random(seed)`. The frames are always distinct and inside the video. If the video has fewer usable frames than requested, the job is refused with "too short" — fewer images are never returned silently. The selected timestamps and their status (saved / failed) are shown on the job and on the dashboard. The initial frame is off by default and, if switched on, is extra (not one of the 4).
+- **Fixed interval:** scheduled samples at 1×, 2×, 3× … the interval, as long as that time is at or before the **last frame**. A 15:00 video at a 15-minute interval has **no** scheduled sample (the first would be at 15:00, after the last frame): 1 image with the initial frame, none without it — never four.
+- **Random frames (`random`):** `sample_count` distinct frames drawn uniformly from frame 1 to the last frame with `random.Random(seed)`. The seed is recorded; the same video, count and seed always give the same frames. Leave the seed empty to have one generated (and recorded).
+- **The initial frame** (00:00:00) is optional and recorded separately as `sample_type = initial`.
+- **The page shows the exact count before you start.**
+- Sampling does **not** guarantee that every person in the video is captured: only the sampled frames are ever analysed.
+
+**Traceability fields (optional, never guessed):** `store_id`, `camera_id` and `recording_start_time` (ISO 8601 clock time of the video's first frame). Leave them empty when unknown — they stay blank in the CSVs and show as "unknown" on the dashboard. A real clock time (`recording_timestamp`) is only produced when `recording_start_time` was supplied; otherwise only the position inside the video (`video_timestamp_*`) is shown, and it is never presented as a clock time.
+
+**Defaults** (Settings → Advanced; `extraction:` in `config/uniform_config.yaml`):
+- sampling: `default_strategy: random_segments`, `default_sample_count: 4`
+- interval (fixed-interval mode): 30 s (15 min is a preset)
+- format: PNG (lossless); JPG (quality 95) is optional
+- maximum frames per job: 5000
+
+**Output** (`storage/extractions/<extraction_job_id>/`, a new folder per job, never overwritten):
+
+| File | Contents |
+|---|---|
+| `frames/<video>_<media id>_<job>_<initial, sNNNN or rNNNN>_f<frame>_t<hhmmssmmm>.png` | The saved frames, unchanged |
+| `image_manifest.csv` | Successfully saved frames only, written row by row (schema below) |
+| `failures.csv` | Samples that could not be extracted (the job also records "Only N of M screenshots could be extracted"): `image_id, extraction_job_id, source_video, stage, sample_type, target_seconds, target_hhmmss, target_frame, error_category, error_message` (`decoder_error`, `no_frame`, `path_too_long`, `write_failed`) |
+
+**Validation and safety:**
+- **Rejected uploads:** wrong file type, unreadable video or missing codec, unknown duration, frame rate or resolution, and files over `MAX_VIDEO_UPLOAD_MB`. Invalid store / camera IDs (letters, digits, `.`, `_`, `-` only) and unparseable recording start times are refused, not corrected.
+- **Duplicates:** only one active job per video. An identical finished job (same strategy, settings and metadata; for random sampling only with the same explicit seed) is shown instead of being repeated; use **Extract again** for a new run.
+- **Stopping and restarts:** **Stop** cancels a running job and keeps exactly the frames already saved. Jobs still running when the server stops are marked `interrupted`.
+
+**API:**
+
+| Method | Endpoint |
+|---|---|
+| GET | `/api/media/{id}/extraction-plan?sampling_strategy=&interval_seconds=&sample_count=&random_seed=&include_initial=` |
+| POST | `/api/extractions` `{media_id, sampling_strategy?, interval_seconds? \| sample_count? + random_seed?, include_initial?, store_id?, camera_id?, recording_start_time?, run_detection?, threshold?, new_run?}` — with only `media_id` it uses the Settings default (4 screenshots, random across video, no initial frame); with `interval_seconds` and no strategy it uses fixed interval |
+| GET | `/api/extractions[/{id}]` |
+| POST | `/api/extractions/{id}/cancel` |
+| GET | `/api/extractions/{id}/frames` |
+| GET | `/api/extractions/{id}/image_manifest.csv` |
+| GET | `/api/extractions/{id}/failures.csv` |
+
+### Uniform detection on extracted frames
+
+There are two ways to run the **existing trained model** on an extraction's frames:
+- Before extracting, turn on **Run uniform detection on the frames afterwards**.
+- On a finished job, click **Run uniform detection** (no new upload needed).
+
+**The model must be trained.** If `models/uniform_best.pt` is missing, unreadable or does not match the checksum in `config/uniform_config.yaml`, the run is refused with that reason (and listed in `processing_failures`). No substitute model is used, and in particular not the stripe-pattern baseline.
+
+**How detection works:** the model is two-stage — the YOLO person detector (`models/person/yolo11n.pt`) finds people, then the YOLO-cls classifier (`models/uniform_best.pt`, classes `non_uniform` / `uniform`) scores each person's upper-body (shirt) crop. A *target-shirt detection* is a person whose shirt crop scores P(uniform) ≥ the threshold. The threshold defaults to Settings → Uniform confidence (**0.70**) and can be set per run; it is recorded on every row. The box is the shirt region of the person box.
+
+**Outcome per image (`prediction`):**
+
+| Outcome | When |
+|---|---|
+| `UNIFORM_DETECTED` | At least one target-shirt detection |
+| `NO_UNIFORM_DETECTED` | None, and every person found could be judged (or nobody was found). This does **not** mean anyone is non-compliant. |
+| `REVIEW_REQUIRED` | None, while at least one person could not be judged (too small, cut off, occluded, blurred or low confidence). The reason is in `review_reason`. |
+| `PROCESSING_FAILED` | The image could not be read or inference raised an error. No prediction is made; prediction-specific fields are blank. Never recorded as `NO_UNIFORM_DETECTED`. |
+
+`processing_status` (image level, separate from the outcome): `ok`, `annotation_failed` (inference ran but the annotated copy could not be saved) or `failed`.
+
+**Output** (`storage/extractions/<extraction_job_id>/detections/<detection_run_id>/`, a new folder per run):
+- **`annotated/`:** a copy of each frame with the boxes and scores drawn on. The original frames are never modified.
+- **`detection_results.csv`:** schema below. `review_status` starts as `unreviewed`; human review is not implemented yet.
+
+**Repeated requests:** the same extraction + model checksum + threshold returns the existing run; **Run again** (`new_run`) creates a new run with its own `detection_run_id` and folder.
+
+**API:**
+
+| Method | Endpoint |
+|---|---|
+| POST | `/api/extractions/{id}/detect` `{threshold?, new_run?}` |
+| GET | `/api/extractions/{id}/detections` |
+| GET | `/api/detection-runs/{run}` |
+| GET | `/api/detection-runs/{run}/results` |
+| GET | `/api/detection-runs/{run}/detection_results.csv` |
+| POST | `/api/detection-runs/{run}/cancel` |
+
+### CSV schemas and how they link
+
+```
+image_manifest.csv ──image_id──> detection_results.csv (1 image : 1..n rows)
+       │ extraction_job_id               │ detection_run_id
+       └──────────────> processing_failures.csv / hourly_summary.csv <──┘
+```
+
+**`image_manifest.csv`** — one row per successfully extracted image:
+`image_id, extraction_job_id, source_video, store_id, camera_id, video_timestamp_seconds, video_timestamp_hhmmss, frame_number, sampling_strategy, sampling_interval_seconds, image_filename, original_image_path, image_width, image_height, extraction_status`, then `source_video_id, sample_type, random_seed, recording_start_time, recording_timestamp`.
+
+**`detection_results.csv`** — one row per **person found** in an image (`detection_type` = `uniform_shirt`, `not_uniform` or `uncertain`), all with the same `image_id`; one row with `detection_count=0` when nobody was found; one row with `PROCESSING_FAILED` when the image failed:
+`image_id, extraction_job_id, detection_run_id, source_video, store_id, camera_id, video_timestamp_seconds, video_timestamp_hhmmss, original_image_path, annotated_image_path, detection_count, prediction, confidence, bbox_xmin, bbox_ymin, bbox_xmax, bbox_ymax, model_version, confidence_threshold, processing_status, review_status`, then `detection_index, detection_type, person_confidence, person_count, recording_timestamp, review_reason`.
+- `detection_count` = target-shirt detections in the image (the same on each of its rows); `person_count` = people found.
+- `confidence` = the classifier's P(uniform) for that person (blank if the person could not be classified); `person_confidence` = the person detector's score.
+
+**`screenshot_summary.csv`** — one row per successfully extracted screenshot (4 for a default job):
+`image_id, extraction_job_id, source_video_filename, store_id, camera_id, recording_date, video_timestamp_seconds, video_timestamp_hhmmss, recording_timestamp, screenshot_filename, original_image_path, original_s3_key, extraction_status, number_of_people_detected, number_of_people_classified, number_of_uniform_compliant, number_of_uniform_non_compliant, number_of_uncertain_predictions, number_of_processing_failures, overall_image_status`, then `recording_date_status, detection_run_id, annotated_image_path, confidence_threshold, model_version, review_reason`.
+- `overall_image_status` is the image outcome (`UNIFORM_DETECTED`, `NO_UNIFORM_DETECTED`, `REVIEW_REQUIRED`, `PROCESSING_FAILED`) or `NOT_ANALYSED` when no detection run processed the screenshot (people counts then blank).
+- "compliant" / "non-compliant" mean the classifier's existing labels `uniform` (P(uniform) ≥ threshold, default 0.70) / `non_uniform` (P(non_uniform) ≥ 0.60) for the **shirt appearance** only; `uncertain` covers everything else. A failed screenshot has blank people counts and `number_of_processing_failures = 1` — it is never counted as non-compliant.
+
+**`uniform_compliance_details.csv`** — one row per person found (no row for a screenshot without people; one `PROCESSING_FAILED` row for a screenshot that failed):
+`image_id, extraction_job_id, detection_run_id, store_id, camera_id, recording_date, video_timestamp_hhmmss, screenshot_filename, person_index, person_confidence, uniform_prediction, uniform_confidence_score, confidence_threshold, compliance_status, review_status, annotated_image_path, annotated_s3_key, model_version, processing_status`, then `recording_date_status, video_timestamp_seconds, recording_timestamp, source_video_filename, original_image_path, bbox_*, review_reason`.
+- `uniform_prediction`: `UNIFORM_DETECTED` / `NON_UNIFORM_DETECTED` / `UNCERTAIN`; `compliance_status` is the same, except `UNCERTAIN` → `REVIEW_REQUIRED` and failures → `PROCESSING_FAILED`.
+- `uniform_confidence_score` = the classifier's P(uniform); `person_confidence` = the person detector's score.
+
+For both: `recording_date` / `recording_timestamp` are filled only when the recording start time was supplied (otherwise blank, `recording_date_status = unknown`; the processing date is never used). `*_s3_key` columns are always blank (S3 is not implemented). A snapshot of both is written to the run folder when a detection run finishes (`detections/<run>/screenshot_summary.csv`, `uniform_compliance_details.csv`); for older runs they are generated on request. Downloads: per run `GET /api/detection-runs/{run}/screenshot_summary.csv` and `/uniform_compliance_details.csv`; combined (latest processed run per job, dashboard filters) `GET /api/frame-results/screenshot_summary.csv` and `/uniform_compliance_details.csv?source_video=&camera_id=&store_id=&date=`.
+
+**`processing_failures.csv`** (export only, built from the stored files and runs):
+`stage, extraction_job_id, detection_run_id, image_id, source_video, store_id, camera_id, video_timestamp_seconds, video_timestamp_hhmmss, target_frame, original_image_path, error_category, error_message, retry_status`.
+- `stage`: `extraction_job`, `extraction`, `detection_run`, `inference`, `annotation`.
+- `retry_status`: `retried_ok` / `retried_failed` when another job of the same video (or another run of the same extraction) handled the same frame, otherwise `not_retried`. Nothing is retried automatically.
+
+**`hourly_summary.csv`** (export only): one row per job and hour that contains footage:
+`source_video, extraction_job_id, detection_run_id, store_id, camera_id, hour_basis, hour_start, hour_end, expected_samples, successful_samples, failed_samples, analysed_images, processing_failed_images, uniform_images, no_uniform_images, review_required_images, target_shirt_detections, person_detections, summary_status`.
+- `hour_basis` is `recording_time` (real clock hours) only when the recording start time is known, otherwise `video_relative` (`hour_start` like `video 01:00:00`).
+- `summary_status`: `complete`, `complete_with_failures`, `extraction_incomplete`, `analysis_incomplete`, `not_analysed`, `in_progress`.
+
+Jobs and runs (state, counts, threshold, model version and checksum, seed, store / camera / recording start) are stored in the existing SQLite database (`extractions`, `frame_detection_runs`); per-image rows live in the CSV files, and the combined exports are generated from them, so the exports always match the stored records. Older jobs' files (`manifest.csv`, older column names, `read_failed` / `inference_failed`) are converted when read.
+
+## Results Dashboard
+
+**Results Dashboard** (`/results`) is the one-page workflow: upload a video → choose the sampling → **START PROCESSING**. This extracts the screenshots, then runs the existing uniform model. Everything shown is counted from the stored records.
+
+**Page contents:**
+- **Progress:** video duration, plus progress for both stages, store / camera and the run ID.
+- **Filters:** source video, camera, store, recording date (only for jobs with a known recording start), result, processing status.
+- **Totals:** videos and jobs (incomplete jobs), images extracted, images analysed, `UNIFORM_DETECTED` / `NO_UNIFORM_DETECTED` / `REVIEW_REQUIRED` / `PROCESSING_FAILED` images, and target-shirt detections (labelled as detection records, not images or people).
+- **Screenshot results table:** video, camera, video time, recorded-at (or "unknown"), result, target shirts, people, confidences, processing status. Click a row for the original and annotated screenshots and their metadata (image / job / run IDs, threshold, model version, file paths).
+- **Videos and processing jobs**, **Hourly summary**, **Processing errors** (with retry status).
+- **CSV exports:** `image_manifest`, `detection_results`, `processing_failures`, `hourly_summary` — all follow the filters.
+
+**Counting rules** (also stated on the page):
+- Image counts are **sampled screenshots, not unique people**; detections are not linked across screenshots.
+- `NO_UNIFORM_DETECTED` is **not** a confirmed uniform violation.
+- Each video uses its latest detection run that processed frames.
+
+**Storage:**
+- Everything is on local disk under `storage/`, behind a small storage interface (`backend/core/storage.py`, `LocalStorage`). The paths recorded in the CSVs are what that interface returns.
+- **S3 is not implemented.** `SU_S3_BUCKET` in `.env` is only displayed; nothing is uploaded. A future S3 backend would implement the same `put()` / `status()` methods, use a private bucket and the standard AWS credential provider chain (never credentials in code or config), and record the real `s3://` URI. It must only be called working after an actual upload and read-back test.
+
+**Live CCTV:** not configured. `backend/capture/cctv_adapter.py` defines the interface a real integration must implement (`fetch_clip(store_id, camera_id, start, end) -> VideoClip`) and `ingest_clip()`, which sends a supplied clip through the same pipeline as an upload (tested with a local file only). Needed before a real adapter can be written: the recorder / VMS vendor and model and written authorisation; the vendor's API documentation for exporting recorded footage (or RTSP playback); a read-only service account (kept outside the code); network access from this server to the recorder; the channel → store_id / camera_id mapping and the recorder's time zone; and a test window of footage to verify end to end. No endpoint is assumed and no camera retrieval is simulated.
+
+**API:**
+- `GET /api/frame-results?source_video=&camera_id=&store_id=&date=&outcome=&processing_status=`
+- `GET /api/frame-results/image_manifest.csv?source_video=&camera_id=&store_id=&date=`
+- `GET /api/frame-results/detection_results.csv?source_video=&camera_id=&store_id=&date=&outcome=&processing_status=`
+- `GET /api/frame-results/processing_failures.csv?source_video=&camera_id=&store_id=`
+- `GET /api/frame-results/hourly_summary.csv?source_video=&camera_id=&store_id=&date=`

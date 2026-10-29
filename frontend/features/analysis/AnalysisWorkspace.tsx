@@ -155,7 +155,7 @@ export default function AnalysisWorkspace({ mode }: { mode: MediaKind | 'any' })
     }
   }
 
-  const reset = () => { setGrid(null); setRoi(null); setGridConfirmed(false); router.push(mode === 'any' ? '/upload' : `/analysis/${mode}`) }
+  const reset = () => { setGrid(null); setRoi(null); setGridConfirmed(false); router.push(mode === 'any' ? '/upload' : mode === 'video' ? '/analysis/video?mode=full' : `/analysis/${mode}`) }
 
   const notTrained = health.data && health.data.uniform_classifier.state !== 'ready'
   const description = useMemo(() => kind === 'video'

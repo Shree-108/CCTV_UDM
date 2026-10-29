@@ -70,9 +70,39 @@ CREATE TABLE IF NOT EXISTS captures (
   media_id TEXT, analysis_id TEXT,
   duration_ms INTEGER
 );
+CREATE TABLE IF NOT EXISTS extractions (
+  id TEXT PRIMARY KEY,                  -- ext-YYYYMMDD-HHMMSS-xxxxxx
+  created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+  media_id TEXT NOT NULL, source_video TEXT NOT NULL,
+  state TEXT NOT NULL,                  -- queued | running | done | failed | cancelled | interrupted
+  interval_seconds REAL NOT NULL, include_initial INTEGER NOT NULL, image_format TEXT NOT NULL,
+  planned INTEGER NOT NULL,             -- samples in the plan (initial + scheduled)
+  extracted INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+  progress REAL NOT NULL DEFAULT 0,
+  error TEXT,
+  output_dir TEXT,                      -- project-relative: storage/extractions/<id>
+  plan TEXT,                            -- JSON summary of the plan (counts + explanation)
+  failures TEXT                         -- JSON list of failed samples (also in failures.csv)
+);
 CREATE INDEX IF NOT EXISTS ix_analyses_created ON analyses(created_at);
 CREATE INDEX IF NOT EXISTS ix_alerts_created ON alerts(created_at);
 CREATE INDEX IF NOT EXISTS ix_captures_camera ON captures(camera_id, captured_at);
+CREATE INDEX IF NOT EXISTS ix_extractions_media ON extractions(media_id, created_at);
+CREATE TABLE IF NOT EXISTS frame_detection_runs (
+  id TEXT PRIMARY KEY,                  -- det-YYYYMMDD-HHMMSS-xxxxxx
+  extraction_id TEXT NOT NULL,
+  created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+  state TEXT NOT NULL,                  -- queued | running | done | failed | cancelled | interrupted
+  threshold REAL NOT NULL,              -- P(uniform) needed for a target-shirt detection
+  model_version TEXT, model_sha256 TEXT,
+  total INTEGER NOT NULL,               -- images to process (extracted frames)
+  processed INTEGER NOT NULL DEFAULT 0, succeeded INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+  uniform_images INTEGER NOT NULL DEFAULT 0, no_uniform_images INTEGER NOT NULL DEFAULT 0,
+  review_images INTEGER NOT NULL DEFAULT 0, detections INTEGER NOT NULL DEFAULT 0,
+  progress REAL NOT NULL DEFAULT 0, error TEXT,
+  output_dir TEXT                       -- project-relative: storage/extractions/<ext>/detections/<run>
+);
+CREATE INDEX IF NOT EXISTS ix_detruns_extraction ON frame_detection_runs(extraction_id, created_at);
 """
 
 # Columns added after the first release (additive migrations, applied on start-up).
@@ -85,7 +115,24 @@ ANALYSIS_COLUMNS = {
     "captured_at": "TEXT",     # UTC ISO time the frame was taken (captures); NULL for uploads
 }
 
-JSON_COLS = {"area", "settings", "live", "files"}
+# Extraction-job columns added with random sampling and store/camera traceability.
+EXTRACTION_COLUMNS = {
+    "sampling_strategy": "TEXT",     # interval | random   (NULL = interval, rows created before random sampling)
+    "sample_count": "INTEGER",       # random: number of random samples requested
+    "random_seed": "INTEGER",        # random: seed that reproduces the same samples
+    "store_id": "TEXT",              # as supplied by the user / CCTV adapter; NULL = unknown
+    "camera_id": "TEXT",
+    "recording_start_time": "TEXT",  # real clock time of the video's first frame, if known (ISO 8601)
+    "source": "TEXT",                # upload | cctv_adapter   (NULL = upload)
+}
+
+# Media columns added later. sha256 = content hash of the received file, used to tell the user that the
+# same video was already received (duplicate delivery). The database is backed up before it is added.
+MEDIA_COLUMNS = {
+    "sha256": "TEXT",
+}
+
+JSON_COLS = {"area", "settings", "live", "files", "plan", "failures"}
 CAMERA_COLS = {"id", "store_id", "name", "source_type", "source", "area", "enabled", "cursor"}
 
 
@@ -105,6 +152,24 @@ class DB:
                 if col not in cols:
                     c.execute(f"ALTER TABLE analyses ADD COLUMN {col} {typ}")
             c.execute("CREATE INDEX IF NOT EXISTS ix_analyses_camera ON analyses(camera_id, created_at)")
+            cols = {r[1] for r in c.execute("PRAGMA table_info(extractions)")}
+            for col, typ in EXTRACTION_COLUMNS.items():
+                if col not in cols:
+                    c.execute(f"ALTER TABLE extractions ADD COLUMN {col} {typ}")
+            cols = {r[1] for r in c.execute("PRAGMA table_info(media)")}
+            missing = {k: v for k, v in MEDIA_COLUMNS.items() if k not in cols}
+            if missing and c.execute("SELECT COUNT(*) FROM media").fetchone()[0]:
+                self._backup(c, "pre-media-sha256")
+            for col, typ in missing.items():
+                c.execute(f"ALTER TABLE media ADD COLUMN {col} {typ}")
+            c.execute("CREATE INDEX IF NOT EXISTS ix_media_sha256 ON media(sha256)")
+
+    def _backup(self, c: sqlite3.Connection, tag: str) -> Path:
+        """Consistent copy of the whole database next to it, before a schema change."""
+        dst = self.path.with_name(f"{self.path.stem}.{tag}-{datetime.now():%Y%m%d-%H%M%S}.db")
+        with sqlite3.connect(dst) as b:
+            c.backup(b)
+        return dst
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=15, check_same_thread=False)
@@ -133,6 +198,16 @@ class DB:
     def media(self, mid: str) -> dict | None:
         with self._conn() as c:
             return self._row(c.execute("SELECT * FROM media WHERE id=?", (mid,)).fetchone())
+
+    def media_list(self, kind: str | None = None) -> list[dict]:
+        with self._conn() as c:
+            q = "SELECT * FROM media" + (" WHERE kind=?" if kind else "") + " ORDER BY created_at"
+            return [self._row(r) for r in c.execute(q, (kind,) if kind else ())]
+
+    def media_by_sha256(self, sha256: str, exclude: str | None = None) -> list[dict]:
+        with self._conn() as c:
+            return [self._row(r) for r in c.execute("SELECT * FROM media WHERE sha256=? AND id<>? ORDER BY created_at",
+                                                    (sha256, exclude or ""))]
 
     # ------------------------------------------------------------------ analyses
     def add_analysis(self, a: dict) -> None:
@@ -313,6 +388,56 @@ class DB:
     def interrupt_captures(self) -> None:
         self._write("UPDATE captures SET status='capture_failed', error='Server restarted during capture' "
                     "WHERE status='running'")
+
+    # ------------------------------------------------------------------ frame extractions
+    def add_extraction(self, e: dict) -> None:
+        e = {k: (json.dumps(v) if k in JSON_COLS and v is not None else v) for k, v in e.items()}
+        self._write(f"INSERT INTO extractions ({','.join(e)}) VALUES ({','.join('?' * len(e))})", list(e.values()))
+
+    def update_extraction(self, eid: str, **fields: Any) -> None:
+        if fields:
+            vals = [json.dumps(v) if k in JSON_COLS and v is not None else v for k, v in fields.items()]
+            self._write(f"UPDATE extractions SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?", [*vals, eid])
+
+    def extraction(self, eid: str) -> dict | None:
+        with self._conn() as c:
+            return self._row(c.execute("SELECT * FROM extractions WHERE id=?", (eid,)).fetchone())
+
+    def extractions(self, media_id: str | None = None, limit: int = 50) -> list[dict]:
+        sql, args = "SELECT * FROM extractions", []
+        if media_id:
+            sql += " WHERE media_id=?"; args.append(media_id)
+        with self._conn() as c:
+            return [self._row(r) for r in c.execute(f"{sql} ORDER BY created_at DESC, id DESC LIMIT ?", [*args, limit])]
+
+    # ------------------------------------------------------------------ uniform detection on extracted frames
+    def add_detection_run(self, d: dict) -> None:
+        self._write(f"INSERT INTO frame_detection_runs ({','.join(d)}) VALUES ({','.join('?' * len(d))})", list(d.values()))
+
+    def update_detection_run(self, rid: str, **fields: Any) -> None:
+        if fields:
+            self._write(f"UPDATE frame_detection_runs SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                        [*fields.values(), rid])
+
+    def detection_run(self, rid: str) -> dict | None:
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM frame_detection_runs WHERE id=?", (rid,)).fetchone()
+        return dict(r) if r else None
+
+    def detection_runs(self, extraction_id: str) -> list[dict]:
+        with self._conn() as c:
+            return [dict(r) for r in c.execute("SELECT * FROM frame_detection_runs WHERE extraction_id=? "
+                                               "ORDER BY created_at DESC, id DESC", (extraction_id,))]
+
+    def interrupt_detection_runs(self) -> None:
+        self._write("UPDATE frame_detection_runs SET state='interrupted', error='Server stopped during detection; "
+                    "results written before that are kept in detection_results.csv' WHERE state IN ('queued','running')")
+
+    def interrupt_extractions(self) -> None:
+        """Jobs that were queued/running when the server stopped. Frames already saved stay listed in
+        their manifest; the job itself cannot resume."""
+        self._write("UPDATE extractions SET state='interrupted', error='Server stopped during extraction; "
+                    "frames saved before that are kept in the manifest' WHERE state IN ('queued','running')")
 
     # ------------------------------------------------------------------ analytics
     def analytics(self, start: str | None = None) -> dict:

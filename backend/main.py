@@ -22,10 +22,14 @@ from backend.analysis.jobs import JobRunner
 from backend.analysis.pipeline import Models
 from backend.api.routes import router
 from backend.api.routes_capture import router as capture_router
+from backend.api.routes_extraction import router as extraction_router
+from backend.api.routes_reports import router as reports_router
+from backend.api.routes_results import router as results_router
 from backend.capture.service import CaptureService
 from backend.core.config import CORS_ORIGINS, DB_PATH
 from backend.core.settings import Settings
 from backend.database.db import DB
+from backend.extraction.runner import ExtractionRunner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 
@@ -39,9 +43,13 @@ class AppState:
         self.jobs = JobRunner(self.db, self.settings, self.models)
         self.db.interrupt_captures()
         self.capture = CaptureService(self.db, self.settings, self.models, self.jobs)
+        self.db.interrupt_extractions()
+        self.db.interrupt_detection_runs()
+        self.extractions = ExtractionRunner(self.db, self.settings, self.models)
 
     def shutdown(self) -> None:
         self.capture.stop()
+        self.extractions.shutdown()
         self.jobs.shutdown()
 
 
@@ -56,6 +64,8 @@ def create_app(state: AppState | None = None, preload: bool = True) -> FastAPI:
                 s.models.get(cfg).warmup(cfg)
             except Exception as e:  # noqa: BLE001 - reported by /api/health
                 logging.error("model load failed: %s", e)
+        from backend.extraction import master_csv
+        logging.info("master CSV sync: %s", master_csv.sync(s.db))    # backfill / recover finished jobs
         if os.environ.get("SU_CAPTURE_SCHEDULER", "on").lower() not in ("off", "0", "false"):
             s.capture.start()
         yield
@@ -66,6 +76,9 @@ def create_app(state: AppState | None = None, preload: bool = True) -> FastAPI:
                        allow_headers=["Content-Type", "Authorization"])
     app.include_router(router)
     app.include_router(capture_router)
+    app.include_router(extraction_router)
+    app.include_router(results_router)
+    app.include_router(reports_router)
     return app
 
 

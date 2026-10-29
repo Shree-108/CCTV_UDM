@@ -165,7 +165,7 @@ def analyze_image(db: DB, aid: str, media: dict, area: AnalysisArea, s: dict, mo
 
     uni = [p.conf for p in people if p.label == "uniform"]
     summary = dict(
-        state="done", progress=1.0, finished_at=_now(), status=status, people=len(people), uniformed=n_u,
+        progress=1.0, finished_at=_now(), status=status, people=len(people), uniformed=n_u,
         non_uniform=labels.count("non_uniform"), uncertain=labels.count("uncertain"),
         avg_uniform_conf=float(np.mean(uni)) if uni else None, max_uniform_conf=max(uni) if uni else None,
         processing_sec=round(time.time() - t0, 2), frames_total=1, frames_processed=1, alerts=n_alerts,
@@ -174,7 +174,7 @@ def analyze_image(db: DB, aid: str, media: dict, area: AnalysisArea, s: dict, mo
     )
     db.update_analysis(aid, **summary)
     files = write_reports(db, aid, out_dir, annotated=annotated, keyframe=annotated)
-    db.update_analysis(aid, files=files)
+    db.update_analysis(aid, state="done", files=files)      # "done" only ever appears together with its files
 
 
 # --------------------------------------------------------------------------- video
@@ -367,7 +367,7 @@ def analyze_video(db: DB, aid: str, media: dict, area: AnalysisArea, s: dict, mo
         keyframe.write_bytes(kf)
 
     db.update_analysis(
-        aid, state="done", progress=1.0, finished_at=_now(), status=status, people=len(labels),
+        aid, progress=1.0, finished_at=_now(), status=status, people=len(labels),
         uniformed=labels.count("uniform"), non_uniform=labels.count("non_uniform"), uncertain=labels.count("uncertain"),
         avg_uniform_conf=float(np.mean(uni_confs)) if uni_confs else None, max_uniform_conf=max(uni_confs) if uni_confs else None,
         duration_sec=round((total or idx) / fps, 2), processing_sec=round(elapsed, 2), frames_total=total or idx,
@@ -379,7 +379,7 @@ def analyze_video(db: DB, aid: str, media: dict, area: AnalysisArea, s: dict, mo
         live={**(live.snapshot or {}), "segments": [[round(a, 2), round(b, 2)] for a, b in timeline.segments]},
     )
     files = write_reports(db, aid, out_dir, annotated=annotated, keyframe=keyframe if kf else None)
-    db.update_analysis(aid, files=files)
+    db.update_analysis(aid, state="done", files=files)      # "done" only ever appears together with its files
 
 
 def _alerts_of(db: DB, aid: str, kind: str):

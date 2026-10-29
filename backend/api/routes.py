@@ -1,6 +1,7 @@
 """REST API for the Sightline Uniform Compliance dashboard."""
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -18,6 +19,8 @@ from backend.core.settings import Settings
 from backend.database.db import now_iso
 from backend.detection.grid import LAYOUTS, grid_cells, validate_area
 from backend.detection.person import gpu_available, select_device
+from backend.capture import cctv_adapter
+from backend.extraction.results import storage_status
 
 router = APIRouter(prefix="/api")
 
@@ -64,6 +67,8 @@ def health(request: Request):
         "evaluation": evaluation,
         "queue": s.jobs.q.qsize(),
         "live_cctv": "not_implemented",
+        "cctv_adapter": cctv_adapter.status(),
+        "storage": storage_status(),
     }
 
 
@@ -125,21 +130,40 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
     limit = (MAX_IMAGE_MB if kind == "image" else MAX_VIDEO_MB) * 2 ** 20
     path = new_upload_path(file.filename)
     size = 0
-    with open(path, "wb") as f:
-        while chunk := await file.read(2 ** 20):
-            size += len(chunk)
-            if size > limit:
-                f.close()
-                path.unlink(missing_ok=True)
-                raise HTTPException(413, f"File too large (max {limit // 2 ** 20} MB for {kind}s)")
-            f.write(chunk)
+    digest = hashlib.sha256()
+    try:
+        with open(path, "wb") as f:
+            while chunk := await file.read(2 ** 20):
+                size += len(chunk)
+                if size > limit:
+                    f.close()
+                    path.unlink(missing_ok=True)
+                    raise HTTPException(413, f"File too large (max {limit // 2 ** 20} MB for {kind}s)")
+                f.write(chunk)
+                digest.update(chunk)
+    except OSError as e:                         # disk full, permissions: nothing half-written is kept
+        path.unlink(missing_ok=True)
+        raise HTTPException(507, f"The file could not be saved on the server ({e.strerror or e.__class__.__name__})")
     try:
         meta = probe(path, file.filename, kind, size)
     except ValueError as e:
         path.unlink(missing_ok=True)
         raise HTTPException(422, str(e))
-    st(request).db.add_media(meta)
-    return _media_out(meta)
+    db = st(request).db
+    meta["sha256"] = digest.hexdigest()
+    db.add_media(meta)
+    return _media_out(meta) | {"previously_received": _previously_received(db, meta)}
+
+
+def _previously_received(db, meta: dict) -> list[dict]:
+    """Earlier deliveries of the SAME file (same SHA-256) and their analysis jobs. The new upload is kept
+    as its own record (nothing is merged or deleted); the user decides whether to analyse it again."""
+    out = []
+    for m in db.media_by_sha256(meta["sha256"], exclude=meta["id"]):
+        jobs = [{"job_id": j["id"], "state": j["state"], "created_at": j["created_at"]}
+                for j in db.extractions(media_id=m["id"], limit=20)]
+        out.append({"media_id": m["id"], "filename": m["filename"], "received_at": m["created_at"], "jobs": jobs})
+    return out
 
 
 def _media_out(m: dict) -> dict:
@@ -149,8 +173,9 @@ def _media_out(m: dict) -> dict:
 
 @router.get("/media/{mid}")
 def get_media(request: Request, mid: str):
-    m = st(request).db.media(mid) or _404("Media")
-    return _media_out(m)
+    db = st(request).db
+    m = db.media(mid) or _404("Media")
+    return _media_out(m) | {"previously_received": _previously_received(db, m) if m.get("sha256") else []}
 
 
 @router.get("/media/{mid}/preview.jpg")
