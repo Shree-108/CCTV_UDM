@@ -48,6 +48,10 @@ def load() -> dict[str, Any]:
     m["sha256"] = (m.get("sha256") or "").strip().lower()
     m.setdefault("task", "classify")
     m.setdefault("imgsz", 224)
+    cs = m.get("crop_size")
+    if cs is not None and not (isinstance(cs, list) and len(cs) == 2 and all(isinstance(v, int) and v > 0 for v in cs)):
+        raise ValueError(f"{CONFIG_PATH.name}: model.crop_size must be [width, height] in pixels or null")
+    m["crop_size"] = tuple(cs) if cs else None
     m["class_map"] = m.get("class_map") or {k: k for k in LABELS}
     bad = {v for v in m["class_map"].values() if v not in LABELS}
     if bad:
@@ -120,6 +124,7 @@ def model_identity() -> dict[str, Any]:
     out = {"name": MODEL["name"], "version": MODEL["version"], "status": MODEL.get("status") or None,
            "dataset_version": MODEL.get("dataset_version") or None, "path": rel(p),
            "expected_path": rel(UNIFORM_MODEL), "present": p.exists(), "sha256": None,
+           "crop_size": list(MODEL["crop_size"]) if MODEL["crop_size"] else None,
            "expected_sha256": MODEL["sha256"] or None, "verified": None}
     if p.exists():
         out["sha256"] = sha256_of(p)
@@ -132,5 +137,8 @@ def version_label(identity: dict | None = None) -> str:
     i = identity or model_identity()
     if not i["present"]:
         return f"no trained model ({i['expected_path']} missing)"
-    tag = f" ({i['status']})" if i.get("status") else ""
+    # the crop shape is part of the label so results made before / after the 2026-10-29 preprocessing fix
+    # stay distinguishable in the stored results (same weights, different input)
+    parts = [i.get("status"), "crop {}x{}".format(*i["crop_size"]) if i.get("crop_size") else None]
+    tag = f" ({', '.join(p for p in parts if p)})" if any(parts) else ""
     return f"{i['name']} v{i['version']}{tag} · sha256 {i['sha256'][:12]}"

@@ -17,13 +17,8 @@ import { MetricCard } from '../../components/ui/kpi'
 import { DataTable } from '../../components/ui/table'
 import { EmptyState, ErrorState } from '../../components/ui/states'
 import { Configure, SampleList, UploadStep, samplingLabel } from '../extraction/ExtractionPage'
+import { ImageNameCell, OUTCOME } from './ScreenshotEvidence'
 
-const OUTCOME: Record<FrameOutcome, { label: string; tone: 'ok' | 'neutral' | 'warn' | 'crit'; help: string }> = {
-  UNIFORM_DETECTED: { label: 'APPROVED UNIFORM DETECTED', tone: 'ok', help: 'the model found at least one target uniform shirt above the threshold' },
-  NO_UNIFORM_DETECTED: { label: 'NO APPROVED UNIFORM DETECTED', tone: 'neutral', help: 'no target shirt passed the threshold — not proof that anyone is out of uniform' },
-  REVIEW_REQUIRED: { label: 'REVIEW REQUIRED', tone: 'warn', help: 'someone could not be judged (too small, cut off, blurred or unclear) — a person should look' },
-  PROCESSING_FAILED: { label: 'PROCESSING FAILED', tone: 'crit', help: 'the image could not be read or analysed — no prediction was made' },
-}
 const PROC_TONE: Record<string, 'ok' | 'warn' | 'crit'> = { ok: 'ok', annotation_failed: 'warn', failed: 'crit' }
 const HOUR_TONE: Record<string, 'ok' | 'warn' | 'crit' | 'info' | 'neutral'> = {
   complete: 'ok', complete_with_failures: 'warn', extraction_incomplete: 'warn', analysis_incomplete: 'warn', not_analysed: 'neutral', in_progress: 'info',
@@ -682,7 +677,7 @@ function LatestAnalysisPanel({ o }: { o: ReportsOverview }) {
   )
 }
 
-/** The six business columns, with links to the evidence. */
+/** The six business columns, with links to the evidence (hover / click the img name for the row's own screenshot). */
 function BusinessTable({ fields, records }: { fields: UniformCompliance['fields']; records: UniformCompliance['records'] }) {
   return (
     <div className="overflow-x-auto">
@@ -697,7 +692,7 @@ function BusinessTable({ fields, records }: { fields: UniformCompliance['fields'
               <td className="px-3 py-1.5 whitespace-nowrap">{r.row['Store Name'] || unknown}</td>
               <td className="px-3 py-1.5 font-mono whitespace-nowrap" title={r.row.Date ? undefined : 'The recording start time was not supplied'}>{r.row.Date || unknown}</td>
               <td className="px-3 py-1.5 font-mono">{r.row['Time Stamp']}</td>
-              <td className="px-3 py-1.5 font-mono text-[11px]"><span className="block max-w-44 truncate" title={r.row['img name']}>{r.row['img name'] || <span className="text-crit">not extracted</span>}</span></td>
+              <td className="px-3 py-1.5 font-mono text-[11px]"><ImageNameCell name={r.row['img name']} links={r} /></td>
               <td className="px-3 py-1.5 font-mono text-[11px]">{r.row['confidence score'] || '—'}</td>
               <td className="min-w-64 px-3 py-1.5 text-fg-2">{r.row['remark (Example)']}</td>
               <td className="px-3 py-1.5 whitespace-nowrap">
@@ -808,7 +803,7 @@ function HistoryTable({ months }: { months: string[] }) {
           { key: 'sn', header: 'Store Name', cell: (r) => r.row['Store Name'] || unknown, sortValue: (r) => r.row['Store Name'] },
           { key: 'd', header: 'Date', cell: (r) => <span className="font-mono">{r.row.Date || unknown}</span>, sortValue: (r) => r.row.Date },
           { key: 'ts', header: 'Time Stamp', cell: (r) => <span className="font-mono">{r.row['Time Stamp']}</span> },
-          { key: 'img', header: 'img name', cell: (r) => <span className="block max-w-44 truncate font-mono text-[11px]" title={r.row['img name']}>{r.row['img name']}</span> },
+          { key: 'img', header: 'img name', cell: (r) => <ImageNameCell name={r.row['img name']} links={r} />, sortValue: (r) => r.row['img name'] },
           { key: 'c', header: 'confidence score', cell: (r) => <span className="font-mono text-[11px]">{r.row['confidence score'] || '—'}</span> },
           { key: 'rm', header: 'remark (Example)', cell: (r) => <span className="block max-w-80 truncate text-[11px] text-fg-2" title={r.row['remark (Example)']}>{r.row['remark (Example)']}</span> },
           { key: 'v', header: 'Video', hideable: true, cell: (r) => <Link className="block max-w-40 truncate text-[11px] text-fg-2 hover:underline" href={`/results?job=${r.job_id}`} title={`job ${r.job_id}`}>{r.source_video}</Link>, sortValue: (r) => r.source_video },

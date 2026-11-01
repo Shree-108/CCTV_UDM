@@ -414,16 +414,39 @@ export interface UniformCompliance {
   saved: boolean
   csv_url: string
   fields: (keyof ComplianceCsvRow)[]
-  records: {
+  records: ({
     row: ComplianceCsvRow
     image_id: string
     processing_status: string
     prediction: FrameOutcome | ''
     extraction_status: 'saved' | 'failed' | 'not_extracted'
     recording_timestamp: string
-    original_url: string | null
-    annotated_url: string | null
-  }[]
+    job_id: string
+    run_id: string | null
+  } & EvidenceLinks)[]
+}
+
+/** Where ONE CSV row's evidence is: addressed by job id + image id + run id, never by the file name alone. */
+export interface EvidenceLinks {
+  original_url: string | null
+  /** small JPEG made in memory for hover previews */
+  thumb_url: string | null
+  annotated_url: string | null
+  evidence_url: string
+}
+
+/** GET /api/extractions/{job}/evidence/{image_id}?run_id= — stored records only, the model is not re-run. */
+export interface ScreenshotEvidence {
+  job_id: string; run_id: string | null; run_state: string | null; image_id: string
+  source_video: string; store_id: string; camera_id: string
+  video_timestamp_hhmmss: string; video_timestamp_seconds: number; frame_number: number | null
+  recording_timestamp: string | null; extraction_status: string; extraction_error: string
+  prediction: FrameOutcome | ''; processing_status: string; people_detected: number | null
+  people: { person: number; type: string; confidence: number | null; person_confidence: number | null; reason: string }[]
+  confidence_threshold: number | null; model_version: string; review_reason: string
+  row: ComplianceCsvRow
+  original: { filename: string | null; url: string | null; thumb_url: string | null; available: boolean }
+  annotated: { filename: string | null; url: string | null; available: boolean }
 }
 
 export interface ResultsVideo {
@@ -691,7 +714,7 @@ export interface MonthReport {
 }
 
 /** GET /api/reports/records — one business row of a completed analysis (= a master CSV row). */
-export interface HistoryRecord {
+export interface HistoryRecord extends EvidenceLinks {
   row: ComplianceCsvRow
   job_id: string; run_id: string; source_video: string; image_id: string
   prediction: FrameOutcome; processing_status: string; month: string | null; completed_at: string | null; in_master_csv: boolean

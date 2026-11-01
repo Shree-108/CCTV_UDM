@@ -23,7 +23,11 @@ train:
   epochs: 60
   imgsz: 224
   batch: 32
-  patience: 15
+  patience: 15                    # early stopping on the validation split; best.pt = best validation epoch
+  optimizer: AdamW                # fine-tuning a pretrained classifier: small, stable steps
+  lr0: 0.0005
+  seed: 42                        # with deterministic: true, a re-run on the same data gives the same model
+  deterministic: true
   # NO rotation / vertical flip: rotating 90 degrees turns vertical stripes into
   # horizontal ones, which are an explicit NEGATIVE class.
   degrees: 0.0
@@ -35,6 +39,15 @@ train:
   erasing: 0.3                    # simulates partial occlusion
   scale: 0.3
 
+# Crop shape: every crop is resized to model.crop_size of config/uniform_config.yaml by prepare_dataset.py,
+# exactly as production inference does (do not change one without the other).
+# Output: a NEW candidate under models/candidates/ (training/candidate.py) - the active model is never
+# overwritten. Activate only after review: python -m training.register_model --activate <folder>
+
 evaluation:
   target_uniform_precision: 0.98  # false positives make compliance unreliable
-  subsets_dir: data/validation    # data/validation/<subset>/<true_class>/*.jpg
+  # INDEPENDENT TEST SET - never used for training, checkpoint selection or threshold tuning (the
+  # threshold is chosen on the validation split). Put crops from OTHER days / stores / cameras / people
+  # than the training data here: data/validation/<subset>/<true_class>/*.jpg (e.g. subset = cctv_day3).
+  # It is empty on this PC: until it is filled no accuracy figure can be reported.
+  subsets_dir: data/validation

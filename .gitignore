@@ -39,3 +39,8 @@ data/uncertain/*
 data/validation/*
 data/reference/
 !data/**/.gitkeep
+
+# Candidate models (training/candidate.py) and config snapshots (register_model --activate):
+# local to each machine, never pushed. The approved model is models/uniform_best.pt.
+models/candidates/
+config/backups/

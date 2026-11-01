@@ -30,6 +30,7 @@ from backend.core.config import UNIFORM_EVAL  # noqa: E402
 from backend.core.model_config import uniform_model_path  # noqa: E402
 from backend.core.settings import Settings  # noqa: E402
 from backend.uniform.classifier import CLASSES, StripePatternBaseline, TrainedClassifier  # noqa: E402
+from training.candidate import read_card  # noqa: E402
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
@@ -102,7 +103,9 @@ def save_cm_plot(cm: list[list[int]], title: str, path: Path) -> None:
     fig.tight_layout(); fig.savefig(path, dpi=120); plt.close(fig)
 
 
-def evaluate(model_path: str | None = None, data: str | None = None, baseline: bool = False) -> dict:
+def evaluate(model_path: str | None = None, data: str | None = None, baseline: bool = False,
+             out_dir: Path | None = None) -> dict:
+    """`out_dir` default: the production report (Settings -> Model evaluation). Candidates pass their own folder."""
     import yaml
     with open(ROOT / "training" / "dataset.yaml", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -115,9 +118,13 @@ def evaluate(model_path: str | None = None, data: str | None = None, baseline: b
         clf, tag = StripePatternBaseline(), "baseline"
     else:
         clf, tag = TrainedClassifier(model_path, "cpu"), "trained"
+        card = read_card(Path(model_path).parent)
+        if card:                                   # a candidate: use the input shape it was trained with
+            cs = card.get("preprocessing", {}).get("crop_size")
+            clf.crop_size = tuple(cs) if cs else None
 
     # the trained model's report is shown in Settings -> Model evaluation
-    out_dir = UNIFORM_EVAL.parent if tag == "trained" else UNIFORM_EVAL.parent.parent / "eval_baseline"
+    out_dir = Path(out_dir) if out_dir else UNIFORM_EVAL.parent if tag == "trained" else UNIFORM_EVAL.parent.parent / "eval_baseline"
     out_dir.mkdir(parents=True, exist_ok=True)
     sets = {"validation_split": ROOT / (data or f"{cfg['output_dir']}/val")}
     sub_root = ROOT / cfg["evaluation"]["subsets_dir"]

@@ -36,14 +36,14 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from backend.core.config import UNIFORM_EVAL  # noqa: E402
-from backend.core.model_config import INFERENCE, UNIFORM_MODEL  # noqa: E402
+from backend.core.model_config import INFERENCE, MODEL  # noqa: E402
+from training.candidate import save_candidate  # noqa: E402
 from training.evaluate import decide, metrics  # noqa: E402
 from training.prepare_dataset import degrade, group_key, load_cfg  # noqa: E402
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 WORK = ROOT / "runs" / "bootstrap"
-SIZE = (112, 160)   # w, h of generated crops (torso-shaped, like production crops)
+SIZE = MODEL["crop_size"] or (112, 160)   # w, h of training crops; inference resizes to the same (model.crop_size)
 
 
 # --------------------------------------------------------------------------- variations
@@ -308,14 +308,17 @@ def main() -> None:
     tr, va = build_train(real, set(), set(), set(), rng, 60, 30, 25)
     report["final_counts"] = write_split(WORK / "final", tr, va)
     best = train(WORK / "final", "final", args.epochs, args.seed)
-    UNIFORM_MODEL.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(best, UNIFORM_MODEL)
-    report["model_path"] = UNIFORM_MODEL.relative_to(ROOT).as_posix()
     report["train_params"] = {"base_model": load_cfg()["train"]["base_model"], "epochs": args.epochs,
                               "imgsz": load_cfg()["train"]["imgsz"], "seed": args.seed}
-    UNIFORM_EVAL.parent.mkdir(parents=True, exist_ok=True)
-    UNIFORM_EVAL.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-    print(f"Saved {report['model_path']}; evaluation -> {UNIFORM_EVAL.relative_to(ROOT).as_posix()}")
+    # a NEW candidate - the production model and its evaluation report are never overwritten
+    folder = save_candidate(best, "uniform-cls-bootstrap", {"trainer": "training/bootstrap.py",
+                                                            "dataset_version": report["dataset_version"],
+                                                            "train_config": report["train_params"]})
+    report["model_path"] = (folder / "uniform_best.pt").relative_to(ROOT).as_posix()
+    (folder / "eval").mkdir()
+    (folder / "eval" / "report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    print(f"Saved candidate {folder.relative_to(ROOT).as_posix()} (production model unchanged). Review eval/report.json, "
+          f"then: python -m training.register_model --activate {folder.relative_to(ROOT).as_posix()}")
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ from typing import Sequence
 import cv2
 import numpy as np
 
-from backend.core.model_config import MODEL, model_identity, rel, version_label
+from backend.core.model_config import INFERENCE, MODEL, model_identity, rel, version_label
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +32,8 @@ CLASSES = ("uniform", "non_uniform", "uncertain")
 # training crops and production crops look identical).
 TORSO_Y = (0.12, 0.55)
 TORSO_X = (0.10, 0.90)
+# squatter person boxes: the torso band would land on the head (config inference.min_box_aspect, 0 = off)
+MIN_BOX_ASPECT = float(INFERENCE.get("min_box_aspect", 0) or 0)
 
 
 def upper_body_box(box: Sequence[float]) -> tuple[int, int, int, int]:
@@ -70,6 +72,8 @@ def visibility_issue(box: Sequence[float], others: list[Sequence[float]],
         return "upper body cut off"
     if h / max(w, 1) < 0.9:
         return "partially visible"
+    if h / max(w, 1) < MIN_BOX_ASPECT:
+        return "seated / leaning / cut off - shirt position unclear"
     torso = upper_body_box(box)
     for o in others:
         # a person whose feet are lower in the image is standing in front
@@ -105,10 +109,13 @@ class TrainedClassifier:
         if "uniform" not in {cmap[n] for n in names.values()}:
             raise ValueError("no model class maps to 'uniform' in config/uniform_config.yaml class_map")
         self.labels = {i: cmap[n] for i, n in names.items()}   # model index -> app label
+        self.crop_size = MODEL.get("crop_size")                # the crop shape the weights were trained on
 
     def predict(self, crops: list[np.ndarray]) -> list[dict[str, float]]:
         if not crops:
             return []
+        if self.crop_size:
+            crops = [cv2.resize(c, self.crop_size, interpolation=cv2.INTER_AREA) for c in crops]
         results = self.model.predict(crops, device=self.device, verbose=False, imgsz=self.imgsz)
         out = []
         for r in results:
@@ -266,6 +273,7 @@ class UniformDetector:
             pu = probs.get("uniform", 0.0)
             pn = probs.get("non_uniform", max(0.0, 1.0 - pu - probs.get("uncertain", 0.0)))
             p.extra["uniform_prob"] = pu
+            p.extra["probs"] = probs              # raw classifier output (training/diagnose.py)
             if pu >= uniform_conf:
                 p.label, p.conf = "uniform", pu
             elif pn >= non_uniform_conf:

@@ -27,6 +27,13 @@ model:
   sha256: "5d785e8bd947bca545dd2c9a4397bdcf876449e831f5195173f2d3f1f1cc54af"
   task: classify                   # Ultralytics YOLO-cls (training/train.py)
   imgsz: 224                       # classifier input size used in training
+  # [width, height] every torso crop is resized to before the classifier sees it. MUST match how the
+  # weights were trained: training/bootstrap.py (v0.1.0, v0.2.0) resized every crop to 112x160 (its
+  # SIZE reads this value). Before 2026-10-29 inference skipped this step, so the network saw crops
+  # proportioned differently than in training - the cause of the light-blue patterned shirt scoring
+  # P(uniform) 0.94 (0.03 at the training shape). null = pass crops as-is (training/train.py models).
+  # Rollback to the old behaviour: set null and restart the API.
+  crop_size: [112, 160]
   # model class name -> application label (uniform | non_uniform | uncertain)
   class_map:
     uniform: uniform
@@ -43,6 +50,11 @@ inference:
   uniform_confidence: 0.70         # P(uniform) needed for COMPLIANT; below -> UNCERTAIN
   non_uniform_confidence: 0.60     # P(non_uniform) needed for NON-COMPLIANT; below -> UNCERTAIN
   min_person_height_px: 50         # smaller people are UNCERTAIN (too far to judge)
+  # Person boxes squatter than this (height / width) are UNCERTAIN ("seated / leaning / cut off"): the
+  # fixed torso band (12-55 % of the box height) then falls on the head instead of the shirt, and the
+  # classifier answered confidently on hair (2026-10-29 audit). Stopgap until the shirt is located from
+  # body keypoints. Cost: seated staff go to REVIEW instead of UNIFORM. 0 = off (previous behaviour).
+  min_box_aspect: 1.5
   # Overall store status from the per-person results:
   #   any_uniform : COMPLIANT when at least one person inside the store area is in uniform
   #                 (staff-presence rule — customers in the area do not make it fail)

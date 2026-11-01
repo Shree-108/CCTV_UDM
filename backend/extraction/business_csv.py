@@ -19,6 +19,7 @@ import csv
 import io
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 from backend.extraction.runner import EXTRACTIONS
 from backend.extraction.screenshots import ANALYSIS_PENDING, DETECTION_FAILED, NOT_ANALYSED, screenshot_results
@@ -59,16 +60,29 @@ def unanalysed_status(run: dict | None, latest: dict | None, pending: bool = Fal
     return DETECTION_FAILED if latest["state"] in ("failed", "cancelled", "interrupted") else NOT_ANALYSED
 
 
+THUMB_WIDTH = 360                 # hover previews: resized in memory by the image endpoints, never saved
+
+
+def evidence_links(job_id: str, r: dict) -> dict:
+    """URLs of the evidence of ONE CSV row (a screenshots.screenshot_results record). They are addressed by
+    job id + image id + the run that produced the row - never by the file name alone - and the image
+    endpoints only serve files listed in that job's manifest / that run's results."""
+    name, ann, rid = r["image_filename"], r["annotated_image_path"], r["detection_run_id"]
+    frame = f"/api/extractions/{quote(job_id)}/frames/{quote(name)}" if name else None
+    return {"original_url": frame, "thumb_url": f"{frame}?w={THUMB_WIDTH}" if frame else None,
+            "annotated_url": f"/api/detection-runs/{quote(rid)}/annotated/{quote(Path(ann).name)}" if ann and rid else None,
+            "evidence_url": f"/api/extractions/{quote(job_id)}/evidence/{quote(r['image_id'])}"
+                            + (f"?run_id={quote(rid)}" if rid else "")}
+
+
 def records(ext: dict, run: dict | None, unanalysed: str = NOT_ANALYSED) -> list[dict]:
     """Preview records: the six CSV values plus links to the screenshot evidence."""
     out = []
     for r in screenshot_results(ext, run, unanalysed):
-        out.append({"row": business_row(r), "image_id": r["image_id"], "processing_status": r["processing_status"],
+        out.append({"row": business_row(r), "job_id": ext["id"], "run_id": run["id"] if run else None,
+                    "image_id": r["image_id"], "processing_status": r["processing_status"],
                     "prediction": r["prediction"], "extraction_status": r["extraction_status"],
-                    "recording_timestamp": r["recording_timestamp"],
-                    "original_url": f"/api/extractions/{ext['id']}/frames/{r['image_filename']}" if r["image_filename"] else None,
-                    "annotated_url": (f"/api/detection-runs/{r['detection_run_id']}/annotated/{Path(r['annotated_image_path']).name}"
-                                      if r["annotated_image_path"] else None)})
+                    "recording_timestamp": r["recording_timestamp"], **evidence_links(ext["id"], r)})
     return out
 
 

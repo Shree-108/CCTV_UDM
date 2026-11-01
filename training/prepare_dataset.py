@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from backend.core.config import TRACKER_CFG  # noqa: E402
-from backend.core.model_config import PERSON_MODEL  # noqa: E402
+from backend.core.model_config import MODEL, PERSON_MODEL  # noqa: E402
 from backend.core.settings import Settings  # noqa: E402
 from backend.detection.person import select_device  # noqa: E402
 from backend.uniform.classifier import upper_body_crop, visibility_issue  # noqa: E402
@@ -146,6 +146,8 @@ def build(cfg: dict) -> Path:
                 img = cv2.imread(str(p))
                 if img is None:
                     continue
+                if MODEL["crop_size"]:              # the same input shape production inference uses
+                    img = cv2.resize(img, MODEL["crop_size"], interpolation=cv2.INTER_AREA)
                 name = f"{p.parent.name}_{p.stem}"
                 cv2.imwrite(str(dest / f"{name}.jpg"), img)
                 counts[cls][split[k]] += 1

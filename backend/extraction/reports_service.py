@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import datetime, tzinfo
 
 from backend.extraction import master_csv
-from backend.extraction.business_csv import BUSINESS_FIELDS, business_row, records as job_evidence
+from backend.extraction.business_csv import BUSINESS_FIELDS, business_row, evidence_links, records as job_evidence
 from backend.extraction.screenshots import screenshot_results
 
 ACTIVE = ("queued", "running")
@@ -198,5 +198,6 @@ def history_records(db, month: str | None = None, by: str = "completion", store:
                 continue
             out.append({"row": row, "job_id": a["job_id"], "run_id": a["run_id"], "source_video": a["source_video"],
                         "image_id": s["image_id"], "prediction": s["prediction"], "processing_status": s["processing_status"],
-                        "month": _month_key(a, by), "completed_at": a["completed_at"], "in_master_csv": a["in_master_csv"]})
+                        "month": _month_key(a, by), "completed_at": a["completed_at"], "in_master_csv": a["in_master_csv"],
+                        **evidence_links(a["job_id"], s)})
     return out

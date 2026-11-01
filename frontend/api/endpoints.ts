@@ -3,7 +3,7 @@ import type {
   Alert, Analysis, AnalysisDetail, Analytics, Area, DetectionImage, DetectionRun, ExtractedFrame, Extraction, ExtractionPlan,
   FrameResults,
   AnnotatedVideo, Health, HistoryRecord, Layout, MasterCsvStatus, Media, MonthGrouping, MonthReport, ReportsOverview,
-  Overview, SamplingStrategy, Settings, SettingSchema, UniformCompliance,
+  Overview, SamplingStrategy, ScreenshotEvidence, Settings, SettingSchema, UniformCompliance,
 } from './types'
 
 /** Filters shared by the Results dashboard and its CSV exports. */
@@ -59,6 +59,8 @@ export const Api = {
   detectionRuns: (extractionId: string) => api<{ runs: DetectionRun[] }>(`/api/extractions/${extractionId}/detections`),
   cancelDetection: (id: string) => api<{ ok: boolean }>(`/api/detection-runs/${id}/cancel`, { method: 'POST' }),
   detectionResults: (id: string) => api<{ fields: string[]; images: DetectionImage[] }>(`/api/detection-runs/${id}/results`),
+  /** One CSV row's evidence; `path` = the row's evidence_url (job + image + run). */
+  screenshotEvidence: (path: string) => api<ScreenshotEvidence>(path),
   uniformCompliance: (extractionId: string) => api<UniformCompliance>(`/api/extractions/${extractionId}/uniform-compliance`),
   /** Cumulative uniform_compliance_master.csv (every finished video). */
   masterCsv: () => api<MasterCsvStatus>('/api/uniform-compliance/master'),

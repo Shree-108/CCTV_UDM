@@ -6,13 +6,14 @@ import io
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from backend.extraction import business_csv, master_csv, reports
 from backend.extraction.detect import RESULT_FIELDS, normalize
 from backend.extraction.extractor import row_meta
+from backend.extraction.screenshots import screenshot_results
 from backend.extraction.runner import EXTRACTIONS, DuplicateJob, ExtractionRejected, manifest_path, plan_for, read_manifest
 
 router = APIRouter(prefix="/api")
@@ -147,13 +148,60 @@ def list_frames(request: Request, eid: str, limit: int = 200, offset: int = 0):
     return {"total": len(rows), "frames": [r | {"url": f"/api/extractions/{eid}/frames/{r['image_filename']}"} for r in page]}
 
 
+Thumb = Query(None, ge=64, le=1280, description="return a JPEG resized to this width (hover previews)")
+
+
+def _image(p: Path, what: str, w: int | None, media_type: str | None = None):
+    """The stored file, or a smaller JPEG copy made in memory (nothing is written to disk)."""
+    if not p.exists():
+        _404(what)
+    if not w:
+        return FileResponse(p, media_type=media_type)
+    import cv2
+    img = cv2.imread(str(p))
+    if img is None:
+        raise HTTPException(422, f"{what} could not be read")
+    h0, w0 = img.shape[:2]
+    if w0 > w:
+        img = cv2.resize(img, (w, max(1, round(h0 * w / w0))), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    if not ok:
+        raise HTTPException(422, f"{what} could not be resized")
+    return Response(buf.tobytes(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+
 @router.get("/extractions/{eid}/frames/{filename}")
-def frame_image(request: Request, eid: str, filename: str):
+def frame_image(request: Request, eid: str, filename: str, w: Optional[int] = Thumb):
     j = st(request).db.extraction(eid) or _404("Extraction")
     if filename not in {r["image_filename"] for r in _read_manifest(j)}:   # only files listed in this job's manifest
         _404("Frame")
-    p = _job_dir(j) / "frames" / filename
-    return FileResponse(p) if p.exists() else _404("Frame")
+    return _image(_job_dir(j) / "frames" / filename, "Frame", w)
+
+
+@router.get("/extractions/{eid}/evidence/{image_id}")
+def screenshot_evidence(request: Request, eid: str, image_id: str, run_id: Optional[str] = None):
+    """The evidence behind ONE business-CSV row, resolved by job id + image id (+ the run that produced the
+    row; default: the run the job's CSV reports). Stored records only - the model is never run here.
+    Says whether each image file is still on disk instead of pointing at another image."""
+    s = st(request)
+    ext, run = _compliance_run(s.db, eid, run_id)
+    unanalysed = _detection_status(s, ext, run)[2]
+    rec = next((r for r in screenshot_results(ext, run, unanalysed) if r["image_id"] == image_id), None) or _404("Screenshot")
+    links = business_csv.evidence_links(eid, rec)
+    ann = Path(rec["annotated_image_path"]).name if rec["annotated_image_path"] else ""
+    return {"job_id": eid, "run_id": run["id"] if run else None, "run_state": run["state"] if run else None,
+            "image_id": image_id, "source_video": rec["source_video"], "store_id": rec["store_id"],
+            "camera_id": rec["camera_id"], "video_timestamp_hhmmss": rec["video_timestamp_hhmmss"],
+            "video_timestamp_seconds": rec["video_timestamp_seconds"], "frame_number": rec["frame_number"],
+            "recording_timestamp": rec["recording_timestamp"] or None, "extraction_status": rec["extraction_status"],
+            "extraction_error": rec["extraction_error"], "prediction": rec["prediction"],
+            "processing_status": rec["processing_status"], "people": rec["people"], "people_detected": rec["people_detected"],
+            "confidence_threshold": rec["confidence_threshold"], "model_version": rec["model_version"],
+            "review_reason": rec["review_reason"], "row": business_csv.business_row(rec),
+            "original": {"filename": rec["image_filename"] or None, "url": links["original_url"], "thumb_url": links["thumb_url"],
+                         "available": bool(rec["image_filename"]) and (_job_dir(ext) / "frames" / rec["image_filename"]).exists()},
+            "annotated": {"filename": ann or None, "url": links["annotated_url"],
+                          "available": bool(ann and run) and (_run_dir(run) / "annotated" / ann).exists()}}
 
 
 # ------------------------------------------------------------------ business-facing uniform compliance CSV
@@ -398,12 +446,11 @@ def detection_results(request: Request, rid: str):
 
 
 @router.get("/detection-runs/{rid}/annotated/{filename}")
-def annotated_image(request: Request, rid: str, filename: str):
+def annotated_image(request: Request, rid: str, filename: str, w: Optional[int] = Thumb):
     r = st(request).db.detection_run(rid) or _404("Detection run")
     if filename not in {Path(x["annotated_image_path"]).name for x in _results(r, None) if x["annotated_image_path"]}:
         _404("Annotated image")
-    p = _run_dir(r) / "annotated" / filename
-    return FileResponse(p, media_type="image/jpeg") if p.exists() else _404("Annotated image")
+    return _image(_run_dir(r) / "annotated" / filename, "Annotated image", w, "image/jpeg")
 
 
 @router.get("/detection-runs/{rid}/{name}.csv")

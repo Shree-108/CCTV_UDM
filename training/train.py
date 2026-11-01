@@ -3,21 +3,21 @@
     python -m training.train                 # build split + train + evaluate
     python -m training.train --skip-build    # reuse existing data/cls
 
-The best weights are copied to models/uniform_best.pt (config/uniform_config.yaml), which the
-dashboard picks up automatically on next start.
+The best weights are saved as a NEW candidate (training/candidate.py: models/candidates/<name>-<time>/)
+and evaluated there. The production model is never touched; activate a reviewed candidate with
+    python -m training.register_model --activate models/candidates/<folder> --version X.Y.Z
 """
 from __future__ import annotations
 
 import argparse
-import shutil
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from backend.core.model_config import UNIFORM_MODEL  # noqa: E402
 from backend.detection.person import select_device  # noqa: E402
+from training.candidate import save_candidate  # noqa: E402
 from training.prepare_dataset import build, load_cfg  # noqa: E402
 
 
@@ -42,15 +42,14 @@ def main() -> None:
     model.train(data=str(data_dir), device=select_device(args.device),
                 project=str(ROOT / "runs" / "uniform_cls"), name="train", exist_ok=True, **t)
 
-    best = Path(model.trainer.best)
-    dest = UNIFORM_MODEL
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(best, dest)
-    print(f"Saved production model -> {dest}")
-    print("Bump model.version in config/uniform_config.yaml, then run: python -m training.register_model")
+    folder = save_candidate(Path(model.trainer.best), "uniform-cls",
+                            {"trainer": "training/train.py", "dataset": str(data_dir.relative_to(ROOT)),
+                             "train_config": {"base_model": base, **t}})
+    print(f"Saved candidate -> {folder} (production model unchanged)")
 
     from training.evaluate import evaluate
-    evaluate(str(dest))
+    evaluate(str(folder / "uniform_best.pt"), out_dir=folder / "eval")
+    print("Review the evaluation, then: python -m training.register_model --activate", folder.relative_to(ROOT).as_posix())
 
 
 if __name__ == "__main__":
