@@ -6,6 +6,7 @@ Run from the project root:
 Inputs: uploaded images/videos, and scheduled captures from LOCAL camera sources
 (backend/capture/: a folder of images or a video file). Live CCTV (RTSP/ONVIF/NVR) is
 not enabled until authorised access exists; it would plug in as another capture source.
+S3: POST /api/s3/process analyses a cart's input_data videos and uploads the results to output_data.
 
 SU_CAPTURE_SCHEDULER=off disables the background capture scheduler (manual captures still work).
 """
@@ -25,11 +26,13 @@ from backend.api.routes_capture import router as capture_router
 from backend.api.routes_extraction import router as extraction_router
 from backend.api.routes_reports import router as reports_router
 from backend.api.routes_results import router as results_router
+from backend.api.routes_s3 import router as s3_router
 from backend.capture.service import CaptureService
 from backend.core.config import CORS_ORIGINS, DB_PATH
 from backend.core.settings import Settings
 from backend.database.db import DB
 from backend.extraction.runner import ExtractionRunner
+from backend.extraction.s3_batch import S3BatchRunner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 
@@ -46,9 +49,11 @@ class AppState:
         self.db.interrupt_extractions()
         self.db.interrupt_detection_runs()
         self.extractions = ExtractionRunner(self.db, self.settings, self.models)
+        self.s3_batches = S3BatchRunner(self.db, self.extractions)
 
     def shutdown(self) -> None:
         self.capture.stop()
+        self.s3_batches.shutdown()
         self.extractions.shutdown()
         self.jobs.shutdown()
 
@@ -79,6 +84,7 @@ def create_app(state: AppState | None = None, preload: bool = True) -> FastAPI:
     app.include_router(extraction_router)
     app.include_router(results_router)
     app.include_router(reports_router)
+    app.include_router(s3_router)
     return app
 
 

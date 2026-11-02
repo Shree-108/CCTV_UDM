@@ -282,7 +282,7 @@ export interface Extraction {
   store_id: string | null
   camera_id: string | null
   recording_start_time: string | null
-  source: 'upload' | 'cctv_adapter'
+  source: 'upload' | 'cctv_adapter' | 's3'
   include_initial: boolean
   image_format: 'png' | 'jpg'
   planned: number
@@ -456,7 +456,7 @@ export interface ResultsVideo {
   store_id: string | null
   camera_id: string | null
   recording_start_time: string | null
-  source: 'upload' | 'cctv_adapter'
+  source: 'upload' | 'cctv_adapter' | 's3'
   created_at: string
   state: Extraction['state']
   sampling_strategy: SamplingStrategy

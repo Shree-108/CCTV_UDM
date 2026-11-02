@@ -9,6 +9,7 @@ pydantic>=2.6,<3
 python-dotenv>=1.0
 pyyaml>=6.0
 lap>=0.5.12              # ByteTrack association
+boto3>=1.34             # S3 cart batches (POST /api/s3/process)
 imageio-ffmpeg>=0.5      # bundled ffmpeg -> browser-playable H.264 annotated video
 scikit-learn>=1.4        # training/evaluate.py
 matplotlib>=3.8          # confusion-matrix plots

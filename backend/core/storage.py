@@ -6,10 +6,11 @@ the returned URI is what goes into the CSVs (`original_image_path`, `annotated_i
   LocalStorage   the only backend that exists: the file stays where it was written and the URI is
                  its project-relative path (storage/extractions/...).
 
-S3 is NOT implemented. A future S3 backend would implement the same two methods: upload the file
+Evidence storage on S3 is NOT implemented (S3 is used only by the cart batches of POST /api/s3/process,
+which read input_data/ and upload their results to output_data/). A future S3 backend would implement the same two methods: upload the file
 to a private bucket (credentials from the standard AWS provider chain - never from code or
-config files) and return the real object URI (s3://bucket/key). Setting SU_S3_BUCKET today only
-changes the reported status; nothing is uploaded.
+config files) and return the real object URI (s3://bucket/key). SU_S3_BUCKET does not change where
+evidence files are stored.
 """
 from __future__ import annotations
 
@@ -52,9 +53,9 @@ class LocalStorage:
         return {
             "mode": self.name, "path": rel(STORAGE), "frames_path": rel(STORAGE / "extractions"),
             "s3": {"configured": bool(bucket), "bucket": bucket or None, "uploads_enabled": False,
-                   "note": ("S3 is not configured: everything is stored on this PC's local disk." if not bucket else
-                            "An S3 bucket is configured, but S3 upload is not implemented in this prototype: nothing "
-                            "has been uploaded and all files are on local disk.")},
+                   "note": ("S3 evidence storage is not implemented: evidence files are on this PC's local disk. S3 is "
+                                     "used only by the cart batches (POST /api/s3/process), which upload their results "
+                                     "to the cart's output_data folder.")},
         }
 
 
