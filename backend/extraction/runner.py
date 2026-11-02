@@ -365,7 +365,12 @@ class ExtractionRunner:
     def _after_extraction(self, jid: str) -> None:
         if jid not in self._auto_detect:
             return
-        thr = self._auto_detect.pop(jid)
+        try:
+            self._start_auto_detection(jid, self._auto_detect[jid])
+        finally:                 # only once the run exists, so detection_requested() never has a gap
+            self._auto_detect.pop(jid, None)
+
+    def _start_auto_detection(self, jid: str, thr: float | None) -> None:
         job = self.db.extraction(jid)
         if not job or job["state"] != "done":
             return

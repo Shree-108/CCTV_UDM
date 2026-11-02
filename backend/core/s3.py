@@ -14,6 +14,8 @@ import os
 import re
 from datetime import date, datetime
 
+import backend.core.config  # noqa: F401 - loads the project's .env (AWS_* variables)
+
 DEFAULT_BUCKET = "yk-cctv-prediction"
 CART_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 

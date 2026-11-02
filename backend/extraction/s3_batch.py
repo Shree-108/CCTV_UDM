@@ -1,16 +1,15 @@
 """Cart batches from S3: every video in s3://<bucket>/<MM-YYYY>/<DD-MM-YYYY>/<cart>/input_data/ goes
 through the quick sampled analysis (the same ExtractionRunner path as the dashboard, so the jobs also
-reach the master CSV), and the results are uploaded to .../<cart>/output_data/:
+reach the master CSV), and ONE file is uploaded per cart:
 
-    <video stem>/uniform_compliance.csv        six-column business CSV of that video (business_csv)
-    <video stem>/detection_results.csv         one row per person
-    <video stem>/annotated/<frame>_annotated.jpg
-    uniform_compliance_<cart>_<DD-MM-YYYY>.csv all videos of the cart, same six columns
-    processing_summary.json                    what was processed, skipped or failed, and why
+    <cart>/output_data/<cart>.xlsx     one row per sampled screenshot of all the cart's videos (cart_report)
 
+The recording time is read from CCTV file names like 20261029_20261029183009_20261029183120_183009.mp4.
 Only videos are analysed (screenshots are sampled from videos); other files are listed as skipped.
-A video whose analysis failed gets no result files - it is never reported as non-uniform.
-One batch runs at a time. Batches are kept in memory and in storage/s3_batches/<id>/summary.json.
+A screenshot that could not be analysed gets a blank score - it is never reported as non-uniform.
+Everything else stays local: the jobs' own files (storage/extractions/) and, per batch,
+storage/s3_batches/<id>/summary.json, <cart>/<cart>.xlsx and <cart>/pictures.csv (which picN is which screenshot).
+One batch runs at a time; batches are kept in memory and in summary.json.
 """
 from __future__ import annotations
 
@@ -30,13 +29,14 @@ from backend.analysis.media import kind_of, new_upload_path, probe
 from backend.core import s3
 from backend.core.config import STORAGE
 from backend.database.db import DB, now_iso
-from backend.extraction import business_csv
-from backend.extraction.runner import EXTRACTIONS, ExtractionRunner
+from backend.extraction import cart_report
+from backend.extraction.runner import ExtractionRunner
+from backend.extraction.screenshots import DETECTION_FAILED, screenshot_results
 
 log = logging.getLogger(__name__)
 BATCHES = STORAGE / "s3_batches"
 POLL_SECONDS = 1.0
-CONTENT_TYPES = {".csv": "text/csv", ".jpg": "image/jpeg", ".json": "application/json"}
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _sha256(p: Path) -> str:
@@ -68,7 +68,7 @@ class S3BatchRunner:
         bid = f"s3-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
         batch = {"id": bid, "created_at": now_iso(), "finished_at": None, "state": "queued", "error": None,
                  "bucket": bucket, "date": f"{day:%d-%m-%Y}", "threshold": threshold,
-                 "carts": [{"cart": c, "state": "queued", "error": None,
+                 "carts": [{"cart": c, "state": "queued", "error": None, "report": None,
                             "input": f"s3://{bucket}/{s3.input_prefix(day, c)}",
                             "output": f"s3://{bucket}/{s3.output_prefix(day, c)}", "files": []} for c in carts]}
         with self._lock:
@@ -134,50 +134,45 @@ class S3BatchRunner:
         if not keys:
             self._set(cart, state="failed", error=f"No files found in {cart['input']}")
             return
-        out_prefix = s3.output_prefix(day, cart["cart"])
-        rows: list[dict] = []
+        records: list[dict] = []
         for key in keys:
             if self._stop.is_set():
                 break
             f = {"key": key, "name": key.rsplit("/", 1)[-1], "state": "queued", "error": None,
-                 "extraction_id": None, "detection_run_id": None, "screenshots": 0, "uploaded": []}
+                 "recording_start_time": None, "extraction_id": None, "detection_run_id": None, "screenshots": 0}
             with self._lock:
                 cart["files"].append(f)
             if kind_of(f["name"]) != "video":
                 self._set(f, state="skipped", error="Not a video file; screenshots are sampled from videos only")
                 continue
             try:
-                rows += self._run_file(s3c, batch, cart, f, out_prefix)
+                records += self._run_file(s3c, batch, cart, f)
             except Exception as e:  # noqa: BLE001 - one bad file must not stop the cart
                 log.exception("S3 batch %s: %s failed", batch["id"], key)
                 self._set(f, state="failed", error=str(e))
             self._save(batch)
-        done = [f for f in cart["files"] if f["state"] == "done"]
-        if done:
-            local = BATCHES / batch["id"] / cart["cart"] / f"uniform_compliance_{cart['cart']}_{batch['date']}.csv"
-            local.parent.mkdir(parents=True, exist_ok=True)
-            with open(local, "w", newline="", encoding="utf-8") as fh:
-                w = csv.DictWriter(fh, fieldnames=business_csv.BUSINESS_FIELDS)
-                w.writeheader()
-                w.writerows(rows)
-            self._upload(s3c, bucket, local, out_prefix + local.name)
-        n_failed = sum(f["state"] == "failed" for f in cart["files"])
-        self._set(cart, state="done" if done else "failed",
-                  error=None if done else "No video in input_data could be analysed (see the files)",
-                  summary={"files": len(cart["files"]), "analysed": len(done), "failed": n_failed,
-                           "skipped": sum(f["state"] == "skipped" for f in cart["files"])})
-        summary = BATCHES / batch["id"] / cart["cart"] / "processing_summary.json"
-        summary.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock:
-            text = json.dumps({"batch_id": batch["id"], "date": batch["date"], **cart}, indent=2)
-        summary.write_text(text, encoding="utf-8")
-        try:
-            self._upload(s3c, bucket, summary, out_prefix + summary.name)
-        except Exception as e:  # noqa: BLE001
-            log.warning("S3 batch %s: summary of %s not uploaded: %s", batch["id"], cart["cart"], e)
 
-    def _run_file(self, s3c, batch: dict, cart: dict, f: dict, out_prefix: str) -> list[dict]:
-        """Download, analyse and upload one video; returns its business CSV rows."""
+        counts = {s: sum(f["state"] == s for f in cart["files"]) for s in ("done", "failed", "skipped")}
+        summary = {"files": len(cart["files"]), "analysed": counts["done"], "failed": counts["failed"],
+                   "skipped": counts["skipped"], "screenshots": len(records)}
+        if not records:
+            self._set(cart, state="failed", summary=summary,
+                      error="No screenshot could be taken from the videos in input_data (see the files)")
+            return
+        rows = cart_report.rows(cart["cart"], records)
+        local = BATCHES / batch["id"] / cart["cart"]
+        xlsx = cart_report.write_xlsx(local / f"{cart['cart']}.xlsx", rows)
+        with open(local / "pictures.csv", "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["img name", "source_video", "image_filename", "original_image_path"])
+            w.writerows([r["img"], r["source_video"], r["image_filename"], r["original_image_path"]] for r in rows)
+        key = s3.output_prefix(day, cart["cart"]) + xlsx.name
+        s3c.upload_file(str(xlsx), bucket, key, ExtraArgs={"ContentType": XLSX_TYPE})
+        self._set(cart, state="done", summary=summary, report=f"s3://{bucket}/{key}",
+                  error=None if not counts["failed"] else f"{counts['failed']} video(s) could not be analysed (see the files)")
+
+    def _run_file(self, s3c, batch: dict, cart: dict, f: dict) -> list[dict]:
+        """Download and analyse one video; returns its screenshot records (screenshots.screenshot_results)."""
         self._set(f, state="downloading")
         path = new_upload_path(f["name"])
         try:
@@ -189,35 +184,25 @@ class S3BatchRunner:
         media["sha256"] = _sha256(path)
         self.db.add_media(media)
 
-        self._set(f, state="processing", media_id=media["id"])
+        start = cart_report.recording_start(f["name"])
+        self._set(f, state="processing", media_id=media["id"], recording_start_time=start)
         job, _ = self.extractions.create(media, None, None, new_run=True, run_detection=True,
                                          threshold=batch["threshold"], strategy=None, store_id=cart["cart"],
-                                         source="s3")
+                                         recording_start_time=start, source="s3")
         self._set(f, extraction_id=job["id"])
         ext, run = self._wait(job["id"])
         if run:
             self._set(f, detection_run_id=run["id"])
         if ext["state"] != "done":
             raise RuntimeError(f"Screenshot extraction {ext['state']}: {ext.get('error') or 'no detail'}")
-        if not run or run["state"] != "done":
-            raise RuntimeError(f"Uniform detection {run['state'] if run else 'not started'}: "
-                               f"{(run or {}).get('error') or 'no detail'}")
-
-        self._set(f, state="uploading", screenshots=ext["extracted"])
-        run_dir = EXTRACTIONS / ext["id"] / "detections" / run["id"]
-        dest = f"{out_prefix}{Path(f['name']).stem}/"
-        csv_path = business_csv.saved_path(ext, run)
-        if not csv_path.exists():                   # the runner writes it; regenerate if that failed
-            csv_path = business_csv.write(ext, run)
-        files = [(csv_path, "uniform_compliance.csv"), (run_dir / "detection_results.csv", "detection_results.csv")]
-        files += [(p, f"annotated/{p.name}") for p in sorted((run_dir / "annotated").glob("*.jpg"))]
-        for local, name in files:
-            self._upload(s3c, batch["bucket"], local, dest + name)
-            with self._lock:
-                f["uploaded"].append(f"s3://{batch['bucket']}/{dest}{name}")
-        self._set(f, state="done")
-        with open(csv_path, newline="", encoding="utf-8") as fh:
-            return list(csv.DictReader(fh))
+        records = screenshot_results(ext, run if run and run["state"] == "done" else None, DETECTION_FAILED)
+        self._set(f, screenshots=len(records))
+        if not run or run["state"] != "done":         # listed with a blank score, never as non-uniform
+            self._set(f, state="failed", error=f"Uniform detection {run['state'] if run else 'not started'}: "
+                                               f"{(run or {}).get('error') or 'no detail'}")
+        else:
+            self._set(f, state="done")
+        return records
 
     def _wait(self, jid: str) -> tuple[dict, dict | None]:
         """Until the extraction and its automatic detection run have finished."""
@@ -229,8 +214,3 @@ class S3BatchRunner:
             if not busy or self._stop.is_set():
                 return ext, runs[0] if runs else None
             time.sleep(POLL_SECONDS)
-
-    @staticmethod
-    def _upload(s3c, bucket: str, local: Path, key: str) -> None:
-        s3c.upload_file(str(local), bucket, key,
-                        ExtraArgs={"ContentType": CONTENT_TYPES.get(local.suffix.lower(), "application/octet-stream")})

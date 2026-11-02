@@ -17,6 +17,23 @@ def kind_of(filename: str) -> str | None:
     return "image" if ext in IMAGE_EXT else "video" if ext in VIDEO_EXT else None
 
 
+def _real_frame_count(cap, reported: int) -> int:
+    """Some NVR exports carry a wrong length in the container (e.g. 26 h for a 3-minute clip), so samples
+    planned from it fall past the real end. When a frame near the reported end cannot be read, count the
+    frames that actually decode instead."""
+    if reported <= 0:
+        return reported
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(reported * 0.98))
+    ok, _ = cap.read()
+    if ok:
+        return reported
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    n = 0
+    while cap.grab():
+        n += 1
+    return n
+
+
 def probe(path: Path, filename: str, kind: str, size: int) -> dict:
     mid = path.stem
     meta = {"id": mid, "created_at": now_iso(), "kind": kind, "filename": filename, "path": str(path),
@@ -32,7 +49,7 @@ def probe(path: Path, filename: str, kind: str, size: int) -> dict:
         if not cap.isOpened():
             raise ValueError("This video could not be opened (unsupported codec?)")
         fps = cap.get(cv2.CAP_PROP_FPS) or 0
-        frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        frames = _real_frame_count(cap, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0))
         meta.update(fps=round(fps, 2) if fps else None, frames=frames or None,
                     duration_sec=round(frames / fps, 2) if fps and frames else None)
         for frac in (0.1, 0.4, 0.7):

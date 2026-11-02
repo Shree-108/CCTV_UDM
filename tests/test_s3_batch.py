@@ -1,20 +1,20 @@
 """S3 cart batches (POST /api/s3/process) against an in-memory S3 stand-in: which keys are read, what
 is written to output_data, and that missing credentials / failed analyses are reported, never hidden."""
-import csv
 import io
-import json
+from datetime import datetime, time as clock
 import time
 
+import openpyxl
 import pytest
 from botocore.exceptions import ClientError, NoCredentialsError
 
 from backend.core import s3
-from backend.extraction import detect
+from backend.extraction import cart_report, detect
 from tests.test_compliance_reports import Person
 from tests.test_extraction import MEDIA
 from tests.test_frame_detection import real_model  # noqa: F401  (fixture re-used)
 
-HEADER = ["Store Name", "Date", "Time Stamp", "img name", "confidence score", "remark (Example)"]
+HEADER = ["cart_id", "Store Name ", "Date ", "Time Stamp ", "img name ", "confidence score ", "remark (Example)"]
 BUCKET = "yk-cctv-prediction"
 DAY = "10-2026/30-10-2026"
 
@@ -93,48 +93,78 @@ def test_missing_credentials_are_reported(client, fake_s3):
     assert r.status_code == 503 and "does not exist" in r.json()["detail"]
 
 
+def _rec(types, scores=None, status="ok"):
+    scores = scores or [None] * len(types)
+    return {"processing_status": status, "people": [{"type": t, "confidence": c} for t, c in zip(types, scores)]}
+
+
+def test_report_wording_and_score():
+    u, n, q = "uniform_shirt", "not_uniform", "uncertain"
+    assert cart_report.remark(_rec([u])) == "person1 wearing the dress"
+    assert cart_report.remark(_rec([n])) == "person1 not wearing the dress"
+    assert cart_report.remark(_rec([])) == "no person detected in frame"
+    assert cart_report.remark(_rec([u, u])) == "both persons are wearing the dress"
+    assert cart_report.remark(_rec([u, u, u])) == "all 3 persons are wearing the dress"
+    assert cart_report.remark(_rec([u, n, u])) == "person2 is not wearing the dress, others wearing"
+    assert cart_report.remark(_rec([n, n, u])) == "person1 and person2 are not wearing the dress, others wearing"
+    assert cart_report.remark(_rec([u, q])) == "person2 needs manual review, others wearing"   # never "not wearing"
+    assert cart_report.remark(_rec([], status="failed")).startswith("uniform status could not be determined")
+    assert cart_report.score(_rec([u, n], [0.9, 0.1])) == 50
+    assert cart_report.score(_rec([])) == 0 and cart_report.score(_rec([], status="detection_failed")) is None
+    assert cart_report.recording_start("20261029_20261029183009_20261029183120_183009.mp4") == "2026-10-29T18:30:09"
+    assert cart_report.recording_start("video1.mp4") is None
+    assert cart_report.cart_id("cart_50") == 50 and cart_report.store_name("cart_50") == "IOCL Khandwa naka"
+
+
+def sheet(fake, key):
+    ws = openpyxl.load_workbook(io.BytesIO(fake.objects[key])).active
+    return [[c.value for c in r] for r in ws.iter_rows()]
+
+
 def test_cart_batch_end_to_end(client, real_model, fake_s3, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(detect, "classify_frame", lambda *a: [Person((100, 80, 220, 460), "uniform", 0.925)])
+    monkeypatch.setattr(detect, "classify_frame", lambda *a: [Person((100, 80, 220, 460), "uniform", 0.9),
+                                                              Person((300, 50, 400, 420), "non_uniform", 0.1)])
     video = (MEDIA / "dvr_grid.mp4").read_bytes()
-    fake = fake_s3(FakeS3({f"{DAY}/cart_78/input_data/": b"",                    # folder placeholder
-                           f"{DAY}/cart_78/input_data/cam1.mp4": video,
-                           f"{DAY}/cart_78/input_data/notes.txt": b"hello",
+    timed = "20261029_20261029183009_20261029183120_183009.mp4"
+    fake = fake_s3(FakeS3({f"{DAY}/cart_50/input_data/": b"",                    # folder placeholder
+                           f"{DAY}/cart_50/input_data/video1.mp4": video,          # no recording time in the name
+                           f"{DAY}/cart_50/input_data/{timed}": video,
+                           f"{DAY}/cart_50/input_data/notes.txt": b"hello",
                            f"{DAY}/cart_46/input_data/cam1.mp4": video}))          # a cart that was not asked for
-    r = client.post("/api/s3/process", json={"date": "30-10-2026", "carts": ["78", "cart_50"]})
+    r = client.post("/api/s3/process", json={"date": "30-10-2026", "carts": ["50", "cart_78"]})
     assert r.status_code == 202, r.text
     b = wait_batch(client, r.json()["id"])
-    assert b["state"] == "done" and [c["cart"] for c in b["carts"]] == ["cart_78", "cart_50"]
-    c78, c50 = b["carts"]
-    assert c78["state"] == "done" and c78["output"] == f"s3://{BUCKET}/{DAY}/cart_78/output_data/"
-    assert c78["summary"] == {"files": 2, "analysed": 1, "failed": 0, "skipped": 1}
-    vid, txt = sorted(c78["files"], key=lambda f: f["name"])
-    assert (vid["name"], vid["state"], txt["state"]) == ("cam1.mp4", "done", "skipped")
-    assert c50["state"] == "failed" and "No files found" in c50["error"]
+    assert b["state"] == "done" and [c["cart"] for c in b["carts"]] == ["cart_50", "cart_78"]
+    c50, c78 = b["carts"]
+    out = f"{DAY}/cart_50/output_data/"
+    assert c50["state"] == "done" and c50["report"] == f"s3://{BUCKET}/{out}cart_50.xlsx"
+    assert c50["summary"] == {"files": 3, "analysed": 2, "failed": 0, "skipped": 1, "screenshots": 8}
+    assert c78["state"] == "failed" and "No files found" in c78["error"]
+    # ONE file per cart, nothing for carts that were not asked for
+    assert fake.keys(out) == [f"{out}cart_50.xlsx"]
+    assert not fake.keys(f"{DAY}/cart_46/output_data/") and not fake.keys(f"{DAY}/cart_78/output_data/")
 
-    out = f"{DAY}/cart_78/output_data/"
-    keys = fake.keys(out)
-    assert f"{out}cam1/uniform_compliance.csv" in keys and f"{out}cam1/detection_results.csv" in keys
-    assert f"{out}uniform_compliance_cart_78_30-10-2026.csv" in keys and f"{out}processing_summary.json" in keys
-    annotated = [k for k in keys if k.startswith(f"{out}cam1/annotated/")]
-    assert annotated and len(annotated) == vid["screenshots"]
-    assert fake.content_types[f"{out}cam1/uniform_compliance.csv"] == "text/csv"
-    assert not fake.keys(f"{DAY}/cart_46/output_data/") and not fake.keys(f"{DAY}/cart_50/output_data/")
-
-    rows = list(csv.reader(io.StringIO(fake.objects[f"{out}uniform_compliance_cart_78_30-10-2026.csv"].decode())))
-    assert rows[0] == HEADER and len(rows) == 1 + vid["screenshots"]
-    for row in (dict(zip(HEADER, x)) for x in rows[1:]):
-        assert row["Store Name"] == "cart_78" and row["Date"] == ""          # recording time unknown: never invented
-        assert row["confidence score"] == "92.5%"
-    assert json.loads(fake.objects[f"{out}processing_summary.json"])["cart"] == "cart_78"
-    ext = client.get(f"/api/extractions/{vid['extraction_id']}").json()
-    assert ext["source"] == "s3" and ext["store_id"] == "cart_78"
+    header, *rows = sheet(fake, f"{out}cart_50.xlsx")
+    assert header == HEADER and len(rows) == 8
+    timed_rows, untimed = rows[:4], rows[4:]                  # known recording times first, in time order
+    for i, (cid, store, day, t, img, score, remark) in enumerate(rows, 1):
+        assert (cid, store, img, score) == (50, "IOCL Khandwa naka", f"pic{i}", 50)
+        assert remark == f"{i}. person2 is not wearing the dress, others wearing"
+    for row in timed_rows:                                    # date and clock time from the file name
+        assert row[2] == datetime(2026, 10, 29) and isinstance(row[3], clock) and row[3] >= clock(18, 30, 9)
+    assert [r[3] for r in timed_rows] == sorted(r[3] for r in timed_rows)
+    for row in untimed:                                       # unknown recording time: never invented
+        assert row[2] is None and row[3].startswith("video 00:")
+    ext = client.get(f"/api/extractions/{c50['files'][0]['extraction_id']}").json()
+    assert ext["source"] == "s3" and ext["store_id"] == "cart_50"
 
 
-def test_failed_analysis_uploads_no_results(client, fake_s3):
-    """Without trained weights detection is refused: the video is failed, nothing claims non-uniform."""
+def test_failed_analysis_is_not_non_uniform(client, fake_s3):
+    """Without trained weights detection is refused: the screenshots are listed with a blank score."""
     fake = fake_s3(FakeS3({f"{DAY}/cart_9/input_data/cam1.mp4": (MEDIA / "dvr_grid.mp4").read_bytes()}))
     b = wait_batch(client, client.post("/api/s3/process", json={"date": "30-10-2026", "carts": ["cart_9"]}).json()["id"])
     (c,) = b["carts"]
-    assert c["state"] == "failed" and c["files"][0]["state"] == "failed"
-    assert "weights not found" in c["files"][0]["error"]
-    assert fake.keys(f"{DAY}/cart_9/output_data/") == [f"{DAY}/cart_9/output_data/processing_summary.json"]
+    assert c["files"][0]["state"] == "failed" and "weights not found" in c["files"][0]["error"]
+    assert fake.keys(f"{DAY}/cart_9/output_data/") == [f"{DAY}/cart_9/output_data/cart_9.xlsx"]
+    header, *rows = sheet(fake, f"{DAY}/cart_9/output_data/cart_9.xlsx")
+    assert rows and all(r[1] is None and r[5] is None and "could not be determined" in r[6] for r in rows)

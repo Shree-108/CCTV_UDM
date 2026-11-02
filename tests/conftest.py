@@ -15,6 +15,9 @@ os.environ["SU_DB_PATH"] = str(_TMP / "test.db")
 os.environ["SU_UNIFORM_MODEL"] = str(_TMP / "no_trained_model.pt")
 # No background scheduler in tests: scheduling is tested by calling CaptureService.tick(now) directly.
 os.environ["SU_CAPTURE_SCHEDULER"] = "off"
+# Never the real bucket or AWS keys from the project's .env (load_dotenv does not override these).
+for _k in ("SU_S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+    os.environ[_k] = ""
 
 import pytest  # noqa: E402
 
