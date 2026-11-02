@@ -17,7 +17,8 @@
 #   - a running app does not answer its health check (ALLOW_UNHEALTHY=1 accepts)
 #   - the backup cannot be made completely
 # Then: backup -> git reset --hard REF -> pinned dependencies -> import / CPU / model checks -> npm ci + build
-#   -> restart both apps (re-registered if the start command changed) -> pm2 save -> health check -> last logs.
+#   -> restart both apps (re-registered if the start command changed) -> pm2 save -> health check -> last logs
+#   -> pm2 list.
 #
 # Restart, not zero-downtime: the API is ONE process (in-process job queue + SQLite), so it is restarted -
 # a few seconds without API; `npm ci` / `npm run build` also replace the files the running dashboard serves,
@@ -618,3 +619,5 @@ pm2 logs "$API_NAME" --lines 20 --nostream || true
 pm2 logs "$WEB_NAME" --lines 20 --nostream || true
 say "Deployed $(git rev-parse --short HEAD) of $BRANCH (previous: ${PREV_COMMIT:0:7}; backup: $LAST_BACKUP)"
 echo "    Roll the code back: REF=$PREV_COMMIT bash deploy/deploy.sh"
+say "pm2 apps"
+pm2 list

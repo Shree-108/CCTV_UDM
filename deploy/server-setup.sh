@@ -8,7 +8,7 @@
 #   1. Checks the machine: CPU, RAM, free disk, GPU (CPU-only unless TORCH_VARIANT=cuda).
 #   2. Installs the system packages (apt) and Node.js >= 20.9 via nvm (Ubuntu's nodejs is too old for
 #      Next.js 16). Python is Ubuntu's python3; 3.12 - 3.14 is required by the pinned packages.
-#   3. Checks that pm2 is installed - it does NOT install it (prints how to).
+#   3. Installs pm2 for this user with npm when it is missing (INSTALL_PM2=0: only check and print how to).
 #   4. Clones REPO_URL into APP_DIR unless a checkout exists (an existing checkout must point at the same
 #      repository), then checks out and fast-forwards BRANCH. Before pulling an update it checks for active
 #      jobs and backs up the data.
@@ -21,6 +21,7 @@
 #   8. Checks .env / .env.local (key names only, values are never printed).
 #   9. Registers both pm2 apps, or restarts them (re-registers them when the start command changed, e.g. a
 #      new port or Node version), then `pm2 save` and a health check.
+#  10. Makes pm2 start on boot (systemd service pm2-<user>, via `pm2 startup`; needs sudo) and lists the apps.
 #
 # Never touches application data, never overwrites model weights, never opens ports, never configures Nginx.
 # Releases after the first one: deploy/deploy.sh.
@@ -52,6 +53,9 @@
 #   ALLOW_UNHEALTHY    1 = continue although a running app does not answer its health check [0]
 #   ALLOW_DEFAULT_API_URL 1 = do not warn about a missing / localhost NEXT_PUBLIC_API_URL (SSH tunnel use) [0]
 #   ALLOW_ROOT         1 = allow running as root (not recommended: pm2/nvm become root's) [0]
+#   INSTALL_PM2        1 = install pm2 (npm install -g pm2@PM2_VERSION) when missing | 0 = fail with instructions [1]
+#   PM2_VERSION        pm2 version installed when missing [latest]
+#   PM2_STARTUP        1 = register pm2 as a systemd boot service (sudo) | 0 = only print how to [1]
 #
 set -euo pipefail
 set -o errtrace            # the ERR trap below also fires inside functions
@@ -78,6 +82,9 @@ FORCE_RESTART="${FORCE_RESTART:-0}"
 ALLOW_UNHEALTHY="${ALLOW_UNHEALTHY:-0}"
 ALLOW_DEFAULT_API_URL="${ALLOW_DEFAULT_API_URL:-0}"
 ALLOW_ROOT="${ALLOW_ROOT:-0}"
+INSTALL_PM2="${INSTALL_PM2:-1}"
+PM2_VERSION="${PM2_VERSION:-latest}"
+PM2_STARTUP="${PM2_STARTUP:-1}"
 
 API_NAME="$PM2_APP_NAME-api"
 WEB_NAME="$PM2_APP_NAME-web"
@@ -556,6 +563,29 @@ install_node() {
   echo "    Add nvm to interactive shells if it is not there yet: see https://github.com/nvm-sh/nvm#installing-and-updating"
 }
 
+install_pm2() {   # into the active (nvm) Node, so no sudo; require_pm2 then checks it
+  if command -v pm2 >/dev/null 2>&1; then say "pm2 $(pm2 --version 2>/dev/null) is installed"; return 0; fi
+  [[ "$INSTALL_PM2" == "1" ]] || return 0
+  say "Installing pm2@$PM2_VERSION for $(id -un) (npm install -g, into Node $(node --version))"
+  npm install -g --no-fund --no-audit "pm2@$PM2_VERSION"
+  hash -r
+}
+
+pm2_boot_service() {   # systemd unit pm2-<user> that resurrects the `pm2 save`d apps after a reboot
+  local user unit node_dir
+  user="$(id -un)"; unit="/etc/systemd/system/pm2-$user.service"; node_dir="$(dirname "$(command -v node)")"
+  if systemctl is-enabled --quiet "pm2-$user" 2>/dev/null && grep -qF "$node_dir" "$unit" 2>/dev/null; then
+    say "pm2 boot service pm2-$user is already enabled"; return 0
+  fi
+  if [[ "$PM2_STARTUP" != "1" ]]; then
+    warn "pm2 does not start on boot yet. Run:  pm2 startup   and execute the sudo command it prints, then  pm2 save"
+    return 0
+  fi
+  say "Registering pm2 as the systemd boot service pm2-$user (sudo)"
+  sudo env PATH="$PATH:$node_dir" "$(command -v pm2)" startup systemd -u "$user" --hp "$HOME" >/dev/null     || die "pm2 startup failed. Run it by hand: pm2 startup   (then execute the sudo command it prints)"
+  systemctl is-enabled --quiet "pm2-$user" || die "pm2-$user.service was not enabled. Check: systemctl status pm2-$user"
+}
+
 check_python() {
   command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "$PYTHON_BIN not found. Install it (sudo apt-get install python3 python3-venv)."
   python_ok "$PYTHON_BIN" || die "$PYTHON_BIN is $("$PYTHON_BIN" --version 2>&1). The pinned packages (deploy/constraints.txt) need
@@ -639,6 +669,7 @@ check_machine
 install_system_packages
 check_python
 install_node
+install_pm2
 require_pm2
 checkout_code
 cd "$APP_DIR"
@@ -664,6 +695,7 @@ if ! wait_healthy; then
   pm2 logs "$WEB_NAME" --lines 30 --nostream || true
   die "The apps did not become healthy within 3 minutes - see the logs above (pm2 logs $API_NAME)."
 fi
+pm2_boot_service
 
 say "Setup complete$([[ $registered == 1 ]] && echo ' (apps restarted with the rebuilt code)')"
 cat <<EOF
@@ -673,12 +705,15 @@ cat <<EOF
     Data         : $STORAGE_DIR  (database $DB_PATH)
     Runtimes     : $("$APP_DIR/.venv/bin/python" --version 2>&1), Node $(node --version), pm2 $(pm2 --version)
     Backups      : $BACKUP_DIR  (newest $BACKUP_KEEP kept)
-    Status/logs  : pm2 status   |   pm2 logs $API_NAME
+    Boot service : pm2-$(id -un)  ($(systemctl is-enabled --quiet "pm2-$(id -un)" && echo enabled || echo 'not enabled - run pm2 startup'))
+    Status/logs  : pm2 list   |   pm2 logs $API_NAME   |   pm2 logs $WEB_NAME
 
 Next steps
-  1. Start on reboot: run   pm2 startup   and execute the sudo command it prints, then   pm2 save
+  1. Open a new shell (or: source ~/.nvm/nvm.sh) so 'pm2' and 'node' are on PATH.
   2. Nginx (configure separately): proxy  /api/  -> http://127.0.0.1:$APP_PORT   and  /  -> http://127.0.0.1:$WEB_PORT,
      client_max_body_size >= MAX_VIDEO_UPLOAD_MB (1024m by default), HTTPS. Open only 80/443 in the security group.
   3. The app has NO login: restrict access (VPN / IP allow-list / Nginx auth) before real use.
   4. Releases: bash deploy/deploy.sh
 EOF
+say "pm2 apps"
+pm2 list
