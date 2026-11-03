@@ -8,8 +8,10 @@ the business sample (cart_50.xlsx): one row per sampled screenshot, in recording
   img name          pic1, pic2, ... (which screenshot each one is: pictures.csv in the local batch folder)
   confidence score  mean of the uniform classifier's P(uniform) over the scored people, 0-100;
                     0 when nobody was detected; blank when the screenshot could not be analysed
+                    (e.g. an unreadable / corrupted video frame)
   remark (Example)  "1. person1 wearing the dress", "2. person2 is not wearing the dress, others wearing", ...
                     A person the model could not judge "needs manual review" - never "not wearing".
+                    An unreadable frame: "frame unreadable (corrupted video) - ..." - never "no person".
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from pathlib import Path
 import yaml
 
 from backend.core.config import ROOT
+from backend.extraction.extractor import FRAME_UNREADABLE
 
 CARTS_CONFIG = ROOT / "config" / "carts.yaml"
 HEADERS = ["cart_id", "Store Name ", "Date ", "Time Stamp ", "img name ", "confidence score ", "remark (Example)"]
@@ -58,6 +61,8 @@ def _names(nums: list[int]) -> str:
 
 def remark(rec: dict) -> str:
     """Remark of one screenshots.screenshot_results record, worded like the business sample."""
+    if rec["processing_status"] == FRAME_UNREADABLE:
+        return "frame unreadable (corrupted video) - uniform status could not be determined"
     if rec["processing_status"] not in ("ok", "annotation_failed"):
         return "uniform status could not be determined (processing failed)"
     types = [p["type"] for p in rec["people"]]

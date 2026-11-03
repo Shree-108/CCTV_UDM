@@ -173,23 +173,22 @@ def test_failed_frames_are_recorded_not_faked(client, monkeypatch):
     m = upload(client, "dvr_grid.mp4")
     real = cv2.VideoCapture
 
-    class Flaky:                                   # fails exactly at frame 250 (10 s)
+    class Flaky:                                   # the decoder gives no image for frame 250 (10 s)
         def __init__(self, *a):
-            self.c, self.pos = real(*a), 0
+            self.c, self.pos = real(*a), -1
 
         def isOpened(self):
             return self.c.isOpened()
 
-        def set(self, prop, v):
-            if prop == cv2.CAP_PROP_POS_FRAMES:
-                self.pos = int(v)
-            return self.c.set(prop, v)
+        def grab(self):
+            self.pos += 1
+            return self.c.grab()
+
+        def retrieve(self):
+            return (False, None) if self.pos == 250 else self.c.retrieve()
 
         def get(self, prop):
             return self.c.get(prop)
-
-        def read(self):
-            return (False, None) if self.pos == 250 else self.c.read()
 
         def release(self):
             self.c.release()

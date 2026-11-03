@@ -99,7 +99,7 @@ def test_three_videos_append_to_one_file(client, real_model, one_uniform, master
     client.post("/api/uniform-compliance/master/sync")   # (may add OTHER tests' finished jobs - never these)
     after = p.read_bytes()
     assert after.startswith(before)                      # append-only
-    names = [r[3] for r in table(p)[1:]]
+    names = [r[3] for r in table(p)[1:] if r[3]]          # blank = no image (extraction failed / frame unreadable)
     assert len(names) == len(set(names)) and ledger_jobs().count(jobs[0][0]["id"]) == 1
 
 

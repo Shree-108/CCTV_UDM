@@ -17,8 +17,9 @@ def video_20min(tmp_path_factory):
     """A real 20:00 MP4 (small and 5 fps so it is quick to write); each frame shows its own number."""
     path = tmp_path_factory.mktemp("v20") / "cctv_20min.mp4"
     w = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), FPS, (160, 120))
+    noise = np.random.default_rng(0).integers(-20, 21, (120, 160, 1))   # a flat frame would be "blank"
     for i in range(MINUTES * 60 * FPS):
-        img = np.full((120, 160, 3), (i * 7) % 255, np.uint8)
+        img = np.clip((i * 7) % 255 + noise, 0, 255).astype(np.uint8).repeat(3, axis=2)
         cv2.putText(img, str(i), (5, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
         w.write(img)
     w.release()

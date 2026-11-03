@@ -64,13 +64,15 @@ class S3BatchRunner:
         except s3.S3Unavailable as e:
             return {"ok": False, "bucket": bucket, "credentials": None, "message": str(e)}
 
-    def create(self, day: date, carts: list[str], bucket: str, threshold: float | None = None) -> dict:
+    def create(self, day: date, carts: list[str], bucket: str, threshold: float | None = None,
+               output_folder: str = s3.OUTPUT_FOLDER) -> dict:
         bid = f"s3-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
         batch = {"id": bid, "created_at": now_iso(), "finished_at": None, "state": "queued", "error": None,
-                 "bucket": bucket, "date": f"{day:%d-%m-%Y}", "threshold": threshold,
+                 "bucket": bucket, "date": f"{day:%d-%m-%Y}", "threshold": threshold, "output_folder": output_folder,
                  "carts": [{"cart": c, "state": "queued", "error": None, "report": None,
                             "input": f"s3://{bucket}/{s3.input_prefix(day, c)}",
-                            "output": f"s3://{bucket}/{s3.output_prefix(day, c)}", "files": []} for c in carts]}
+                            "output": f"s3://{bucket}/{s3.output_prefix(day, c, output_folder)}", "files": []}
+                           for c in carts]}
         with self._lock:
             self.batches[bid] = batch
         self._save(batch)
@@ -166,7 +168,7 @@ class S3BatchRunner:
             w = csv.writer(fh)
             w.writerow(["img name", "source_video", "image_filename", "original_image_path"])
             w.writerows([r["img"], r["source_video"], r["image_filename"], r["original_image_path"]] for r in rows)
-        key = s3.output_prefix(day, cart["cart"]) + xlsx.name
+        key = s3.output_prefix(day, cart["cart"], batch.get("output_folder") or s3.OUTPUT_FOLDER) + xlsx.name
         s3c.upload_file(str(xlsx), bucket, key, ExtraArgs={"ContentType": XLSX_TYPE})
         self._set(cart, state="done", summary=summary, report=f"s3://{bucket}/{key}",
                   error=None if not counts["failed"] else f"{counts['failed']} video(s) could not be analysed (see the files)")
@@ -194,7 +196,13 @@ class S3BatchRunner:
         if run:
             self._set(f, detection_run_id=run["id"])
         if ext["state"] != "done":
-            raise RuntimeError(f"Screenshot extraction {ext['state']}: {ext.get('error') or 'no detail'}")
+            error = f"Screenshot extraction {ext['state']}: {ext.get('error') or 'no detail'}"
+            # every sample failed (e.g. all frames unreadable): still one report row each, never dropped
+            records = screenshot_results(ext, None) if ext["state"] == "failed" and ext.get("failed") else []
+            if not records:
+                raise RuntimeError(error)
+            self._set(f, state="failed", error=error, screenshots=len(records))
+            return records
         records = screenshot_results(ext, run if run and run["state"] == "done" else None, DETECTION_FAILED)
         self._set(f, screenshots=len(records))
         if not run or run["state"] != "done":         # listed with a blank score, never as non-uniform

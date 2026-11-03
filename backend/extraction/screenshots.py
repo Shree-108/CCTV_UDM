@@ -17,6 +17,7 @@ screenshot and do not identify anyone across screenshots.
 from __future__ import annotations
 
 from backend.extraction.detect import PROCESSING_FAILED
+from backend.extraction.extractor import FRAME_UNREADABLE  # failure category = status: corrupted / blank frame
 from backend.extraction.plan import clock_time, hhmmss
 from backend.extraction.reports import run_rows
 from backend.extraction.runner import read_failures, read_manifest
@@ -34,6 +35,9 @@ def remark(types: list[str], prediction: str, processing_status: str, reasons: l
     person could not be judged (person_reason; '' when unknown, e.g. runs made before it was recorded)."""
     if processing_status == EXTRACTION_FAILED:
         return "Uniform status could not be determined because the screenshot could not be extracted."
+    if processing_status == FRAME_UNREADABLE:
+        return ("Uniform status could not be determined because the video frame at this position is unreadable "
+                "(corrupted or blank); no prediction was made.")
     if processing_status == NOT_ANALYSED:
         return "Not analysed yet: no detection run has processed this screenshot."
     if processing_status == ANALYSIS_PENDING:
@@ -115,6 +119,7 @@ def screenshot_results(ext: dict, run: dict | None, unanalysed: str = NOT_ANALYS
                 "sample_type": s.get("sample_type") or (m or f or {}).get("sample_type", ""),
                 "extraction_status": "saved" if m else "failed" if f else "not_extracted",
                 "extraction_error": (f or {}).get("error_message", ""),
-                "_status": unanalysed if m else EXTRACTION_FAILED}
+                "_status": unanalysed if m else FRAME_UNREADABLE
+                if (f or {}).get("error_category") == FRAME_UNREADABLE else EXTRACTION_FAILED}
         out.append(_record(base, by_image.get(iid) if m else None, run))
     return sorted(out, key=lambda x: x["video_timestamp_seconds"])

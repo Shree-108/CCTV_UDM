@@ -40,17 +40,22 @@ def test_both_pages_render_the_same_sampled_analysis_panel():
 
 
 def test_quick_mode_reads_and_classifies_only_the_four_frames(client, real_model, monkeypatch):  # noqa: F811
-    reads, calls = {"n": 0}, {"n": 0}
+    reads, grabs, calls = {"n": 0}, {"n": 0}, {"n": 0}
     real = extractor.cv2.VideoCapture
 
-    class CountingCapture:                       # every decoded frame the EXTRACTOR asks for (the upload probe's
-        def __init__(self, *a):                  # 3 preview reads use the same cv2 module and are not counted)
+    class CountingCapture:                       # the frames the EXTRACTOR decodes / converts (the upload probe
+        def __init__(self, *a):                  # uses the same cv2 module and is not counted)
             self._c = real(*a)
 
-        def read(self):
+        def grab(self):
+            if sys._getframe(1).f_code.co_filename == extractor.__file__:
+                grabs["n"] += 1
+            return self._c.grab()
+
+        def retrieve(self):
             if sys._getframe(1).f_code.co_filename == extractor.__file__:
                 reads["n"] += 1
-            return self._c.read()
+            return self._c.retrieve()
 
         def __getattr__(self, k):
             return getattr(self._c, k)
@@ -63,7 +68,7 @@ def test_quick_mode_reads_and_classifies_only_the_four_frames(client, real_model
     media_frames = 500                            # tests/media/dvr_grid.mp4
     j, run = run_job(client, {"sampling_strategy": "random_segments", "sample_count": 4, "random_seed": 81})
     assert run["state"] == "done" and run["processed"] == 4
-    assert reads["n"] == 4 < media_frames         # seeks to each planned frame; never decodes the whole video
+    assert reads["n"] == 4 < media_frames         # only the 4 planned frames are converted and kept
     assert calls["n"] == 4                        # the model runs on the 4 screenshots only
 
     # four distinct frames, one per quarter, seed and timestamps persisted on the job
@@ -72,6 +77,7 @@ def test_quick_mode_reads_and_classifies_only_the_four_frames(client, real_model
     assert job["random_seed"] == 81 and job["sampling_strategy"] == "random_segments"
     samples = job["plan"]["samples"]
     frames = [s["target_frame"] for s in samples]
+    assert grabs["n"] == frames[-1] + 1           # decoded in order, once, up to the last sample - never further
     assert len(set(frames)) == 4 and frames == sorted(frames)
     for k, f in enumerate(frames):
         assert k * media_frames // 4 <= f < (k + 1) * media_frames // 4

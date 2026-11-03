@@ -168,3 +168,21 @@ def test_failed_analysis_is_not_non_uniform(client, fake_s3):
     assert fake.keys(f"{DAY}/cart_9/output_data/") == [f"{DAY}/cart_9/output_data/cart_9.xlsx"]
     header, *rows = sheet(fake, f"{DAY}/cart_9/output_data/cart_9.xlsx")
     assert rows and all(r[1] is None and r[5] is None and "could not be determined" in r[6] for r in rows)
+
+
+def test_test_runs_upload_next_to_output_data_never_over_it(client, real_model, fake_s3, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(detect, "classify_frame", lambda *a: [Person((100, 80, 220, 460), "uniform", 0.9)])
+    prod = f"{DAY}/cart_50/output_data/cart_50.xlsx"
+    fake = fake_s3(FakeS3({f"{DAY}/cart_50/input_data/video1.mp4": (MEDIA / "dvr_grid.mp4").read_bytes(),
+                           prod: b"the existing report"}))
+    for bad in ("output_data", "input_data", "../output_data", "a/b", ""):
+        r = client.post("/api/s3/process", json={"date": "30-10-2026", "carts": ["50"], "output_folder": bad})
+        assert r.status_code == 422, bad
+    r = client.post("/api/s3/process", json={"date": "30-10-2026", "carts": ["50"], "output_folder": "output_data_test"})
+    assert r.status_code == 202 and r.json()["output_folder"] == "output_data_test"
+    b = wait_batch(client, r.json()["id"])
+    (c,) = b["carts"]
+    assert c["state"] == "done" and c["report"] == f"s3://{BUCKET}/{DAY}/cart_50/output_data_test/cart_50.xlsx"
+    assert fake.objects[prod] == b"the existing report"                       # production report untouched
+    assert fake.keys(f"{DAY}/cart_50/output_data_test/") == [f"{DAY}/cart_50/output_data_test/cart_50.xlsx"]
+    assert len(sheet(fake, f"{DAY}/cart_50/output_data_test/cart_50.xlsx")) == 5   # header + 4 screenshots

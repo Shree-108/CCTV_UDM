@@ -1,9 +1,18 @@
 """Extract the planned frames from a video file - one frame in memory at a time.
 
-For each sample the decoder seeks to the target frame number and reads ONE frame. The frame
-number recorded is the one the decoder actually returned, and the timestamp is
-frame_number / fps. The image is written exactly as decoded (PNG = lossless; JPG optional):
-nothing is drawn on it, cropped, resized or otherwise changed.
+The video is decoded strictly in order from its first frame, in ONE pass (samples in frame order);
+frames between samples are decoded but not converted or kept. Seeking straight to a frame number is
+not used: in containers without a seek index (NVR exports: HEVC in MPEG-PS) the decoder then starts in
+the middle of a group of pictures, without its reference pictures, and returns grey frames - or a
+different frame than the one asked for. The frame number is the position in decode order, and the
+timestamp is the frame's presentation time measured from the first frame (NVR exports have recording
+gaps, so frame_number / fps is wrong there); a frame without a timestamp of its own is placed after the
+last frame that had one, at the frame rate.
+
+Every decoded sample is checked (frame_quality.problem) before it is saved: a corrupted or blank frame
+is a failure (error_category frame_unreadable), never an image - so it is never analysed or reported
+as "no person detected". It is not replaced by a neighbouring frame. The image is written exactly as
+decoded (PNG = lossless; JPG optional): nothing is drawn on it, cropped, resized or otherwise changed.
 
 Outputs (never overwritten - every job has its own folder):
   storage/extractions/<job>/frames/<image files>
@@ -24,6 +33,7 @@ from typing import Callable
 import cv2
 
 from backend.core.storage import StorageBackend, get_storage, rel  # noqa: F401 - rel re-exported
+from backend.extraction import frame_quality
 from backend.extraction.plan import Sample, clock_time, hhmmss
 
 MANIFEST_FIELDS = ["image_id", "extraction_job_id", "source_video", "store_id", "camera_id",
@@ -37,6 +47,7 @@ LEGACY_MANIFEST_NAME = "manifest.csv"        # jobs created before the file was 
 WINDOWS_MAX_PATH = 260
 FAILURE_FIELDS = ["image_id", "extraction_job_id", "source_video", "stage", "sample_type", "target_seconds",
                   "target_hhmmss", "target_frame", "error_category", "error_message"]
+FRAME_UNREADABLE = "frame_unreadable"        # error_category of a decoded but corrupted / blank frame
 # columns written by jobs before the schema change -> current names
 _LEGACY_MANIFEST = {"timestamp_seconds": "video_timestamp_seconds", "timestamp_hhmmss": "video_timestamp_hhmmss",
                     "image_path": "original_image_path"}
@@ -90,6 +101,56 @@ def image_id(job_id: str, s: Sample) -> str:
     return f"{job_id}-{tag}{s.index:04d}"
 
 
+class SequentialReader:
+    """Frames of an opened cv2.VideoCapture in decode order, from the first one - never by seeking.
+    Frames must be asked for in increasing order (the same frame twice is allowed)."""
+    STOPPED = "stopped"
+
+    def __init__(self, cap, fps: float):
+        self.cap, self.fps = cap, fps
+        self.next = 0                   # number of the frame the next grab() decodes
+        self.origin_ms = 0.0            # decoder clock at frame 0 (NVR exports can start at "26 h")
+        self.known = (0, 0.0)           # (frame, seconds) of the last frame that had its own timestamp
+        self.last: tuple | None = None  # (frame, image, seconds) of the last frame returned
+
+    def _grab(self) -> float | None:
+        """Decode the next frame; its time in seconds from frame 0, or None at the end of the video."""
+        if not self.cap.grab():
+            return None
+        n, ms = self.next, self.cap.get(cv2.CAP_PROP_POS_MSEC)
+        self.next += 1
+        if n == 0:
+            self.origin_ms = ms
+            return 0.0
+        if ms > 0:                                    # 0 = this frame carries no timestamp
+            t = (ms - self.origin_ms) / 1000
+            if t > self.known[1]:
+                self.known = (n, t)
+                return t
+        return self.known[1] + (n - self.known[0]) / self.fps
+
+    def read(self, number: int, should_stop: Callable[[], bool] = lambda: False) -> tuple:
+        """(image, seconds from frame 0, error) of frame `number`; error is "" when the image is there and
+        STOPPED when should_stop() asked to stop while decoding towards it."""
+        if self.last and self.last[0] == number:
+            return self.last[1], self.last[2], ""
+        if number < self.next:
+            return None, None, f"frame {number} was already passed (frames are read in order)"
+        while self.next < number:
+            if self.next % 250 == 0 and should_stop():
+                return None, None, self.STOPPED
+            if self._grab() is None:
+                return None, None, f"the video ends after {self.next} decodable frames, before frame {number}"
+        t = self._grab()
+        if t is None:
+            return None, None, f"the video ends after {self.next} decodable frames, before frame {number}"
+        ok, frame = self.cap.retrieve()
+        if not ok or frame is None:
+            return None, None, "the decoder returned no image for this frame"
+        self.last = (number, frame, t)
+        return frame, t, ""
+
+
 def extract(video_path: str, meta: dict, out_dir: Path, fps: float, samples: list[Sample], image_format: str = "png",
             on_progress: Callable[[int, int, int], None] | None = None,
             should_stop: Callable[[], bool] = lambda: False, storage: StorageBackend | None = None) -> dict:
@@ -108,6 +169,7 @@ def extract(video_path: str, meta: dict, out_dir: Path, fps: float, samples: lis
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError("The video could not be opened (missing codec or unreadable file)")
+    reader = SequentialReader(cap, fps)
     with open(out_dir / MANIFEST_NAME, "w", newline="", encoding="utf-8") as mf, \
             open(out_dir / "failures.csv", "w", newline="", encoding="utf-8") as ff:
         mw = csv.DictWriter(mf, fieldnames=MANIFEST_FIELDS)
@@ -115,34 +177,39 @@ def extract(video_path: str, meta: dict, out_dir: Path, fps: float, samples: lis
         mw.writeheader(); fw.writeheader()
         mf.flush(); ff.flush()
         try:
-            for n, s in enumerate(samples, 1):
+            for n, s in enumerate(sorted(samples, key=lambda x: (x.target_frame, x.index)), 1):
                 if should_stop():
                     stopped = True
                     break
                 iid = image_id(job_id, s)
 
-                def fail(category: str, message: str) -> None:
+                def fail(category: str, message: str, seconds: float | None = None) -> None:
+                    """`seconds` = the decoded frame's real time when it is known (an unreadable frame was
+                    decoded); otherwise the planned time (frame / fps) is all there is."""
+                    at = s.target_seconds if seconds is None else round(seconds, 3)
                     row = {"image_id": iid, "extraction_job_id": job_id, "source_video": source_video,
-                           "stage": "extraction", "sample_type": s.sample_type, "target_seconds": s.target_seconds,
-                           "target_hhmmss": hhmmss(s.target_seconds), "target_frame": s.target_frame,
+                           "stage": "extraction", "sample_type": s.sample_type, "target_seconds": at,
+                           "target_hhmmss": hhmmss(at), "target_frame": s.target_frame,
                            "error_category": category, "error_message": message}
                     fw.writerow(row); ff.flush()
                     failures.append(row)
 
+                frame = None
                 try:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, s.target_frame)
-                    ok, frame = cap.read()
+                    frame, t, err = reader.read(s.target_frame, should_stop)
                 except cv2.error as e:                        # decoder error on this frame only
-                    ok, frame = False, None
                     fail("decoder_error", f"decoder error: {e.msg if hasattr(e, 'msg') else e}")
                 else:
-                    if not ok or frame is None:
-                        fail("no_frame", "the decoder returned no frame at this position")
-                if ok and frame is not None:
-                    actual = int(round(cap.get(cv2.CAP_PROP_POS_FRAMES))) - 1
-                    if actual < 0:
-                        actual = s.target_frame
-                    t = actual / fps
+                    if err == reader.STOPPED:
+                        stopped = True
+                        break
+                    if err:
+                        fail("no_frame", err)
+                    elif why := frame_quality.problem(frame):
+                        fail(FRAME_UNREADABLE, why, t)    # never saved, so never analysed
+                        frame = None
+                if frame is not None:
+                    actual = s.target_frame
                     tag = {"initial": "initial", "random": f"r{s.index:04d}"}.get(s.sample_type, f"s{s.index:04d}")
                     name = f"{stem}_{job_id[-6:]}_{tag}_f{actual:07d}_t{hhmmss(t).replace(':', '').replace('.', '')}{ext}"
                     path = frames_dir / name

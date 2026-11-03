@@ -21,6 +21,9 @@ class ProcessIn(BaseModel):
     carts: list[str] = Field(min_length=1, max_length=100, description="e.g. [\"cart_78\", \"cart_50\"]; a bare number means cart_<n>")
     bucket: Optional[str] = Field(default=None, max_length=63, description="Default: SU_S3_BUCKET or yk-cctv-prediction")
     threshold: Optional[float] = Field(default=None, ge=0.5, le=0.99, description="Detection threshold (default: Settings)")
+    output_folder: Optional[str] = Field(default=None, max_length=40,
+                                         description="Test runs only: upload to <cart>/<output_folder>/ instead of "
+                                                     "<cart>/output_data/, e.g. output_data_test (default: output_data)")
 
 
 @router.get("/status")
@@ -37,13 +40,14 @@ def process(request: Request, body: ProcessIn):
     try:
         day = s3.parse_day(body.date)
         carts = list(dict.fromkeys(s3.cart_name(c) for c in body.carts))
+        folder = s3.other_output_folder(body.output_folder) if body.output_folder is not None else s3.OUTPUT_FOLDER
     except ValueError as e:
         raise HTTPException(422, str(e))
     bucket = (body.bucket or "").strip() or s3.bucket_name()
     check = runner.check(bucket)
     if not check["ok"]:
         raise HTTPException(503, check["message"])
-    return runner.create(day, carts, bucket, body.threshold)
+    return runner.create(day, carts, bucket, body.threshold, folder)
 
 
 @router.get("/process")

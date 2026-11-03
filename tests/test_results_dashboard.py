@@ -7,11 +7,11 @@ import numpy as np
 from backend.extraction import results as R
 from backend.extraction.extractor import MANIFEST_FIELDS
 from backend.extraction.detect import RESULT_FIELDS
-from tests.test_frame_detection import make_video, real_model, wait  # noqa: F401  (fixture re-used)
+from tests.test_frame_detection import empty_scene, make_video, real_model, wait  # noqa: F401  (fixture re-used)
 
 
 def _workflow(client, tmp_path, name, n_seconds=3):
-    frames = [np.full((480, 640, 3), 70 + 40 * i, np.uint8) for i in range(n_seconds)]
+    frames = [empty_scene(70 + 40 * i) for i in range(n_seconds)]
     video = make_video(tmp_path / name, frames)
     m = client.post("/api/media", files={"file": (name, video.read_bytes())}).json()
     ext = client.post("/api/extractions", json={"media_id": m["id"], "interval_seconds": 1, "include_initial": True,

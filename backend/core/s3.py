@@ -62,8 +62,22 @@ def input_prefix(day: date, cart: str) -> str:
     return f"{day_prefix(day)}{cart}/input_data/"
 
 
-def output_prefix(day: date, cart: str) -> str:
-    return f"{day_prefix(day)}{cart}/output_data/"
+OUTPUT_FOLDER = "output_data"
+FOLDER_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def output_prefix(day: date, cart: str, folder: str = OUTPUT_FOLDER) -> str:
+    return f"{day_prefix(day)}{cart}/{folder}/"
+
+
+def other_output_folder(value: str) -> str:
+    """An opt-in folder next to output_data for test runs (e.g. "output_data_test"), never the production
+    output_data folder or the input_data folder."""
+    v = value.strip()
+    if not FOLDER_PATTERN.match(v) or v.lower() in (OUTPUT_FOLDER, "input_data"):
+        raise ValueError("output_folder must be 1-40 letters, digits, _ or - and not output_data / input_data "
+                         f"(got {value!r})")
+    return v
 
 
 def check(s3c, bucket: str) -> dict:

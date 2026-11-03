@@ -22,7 +22,9 @@ There is no JS test runner and no ESLint config; frontend behaviour is checked w
 1. **Quick sampled analysis** — used by BOTH Video Analysis (default mode) and the Results Dashboard.
    `POST /api/media` → `POST /api/extractions` (`run_detection: true`) → `backend/extraction/runner.py`
    (one worker thread) → `plan.py` (`random_segments`: one random frame per quarter, seeded) →
-   `extractor.py` (seeks to each planned frame; never decodes the whole video) → `detect.py`
+   `extractor.py` (decodes in order, once, up to the last planned frame - never seeks: NVR exports
+   are HEVC in MPEG-PS where seeking returns grey / wrong frames; corrupted or blank frames are rejected by
+   `frame_quality.py` as `frame_unreadable`) → `detect.py`
    (`classify_frame` per screenshot: person detector + per-person classifier) → reports →
    `business_csv.write` (per-job CSV) → `master_csv.append` → run marked `done`.
    Frontend: `ProcessPanel` in `frontend/features/results/ResultsDashboard.tsx`, reused by

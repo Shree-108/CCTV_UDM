@@ -269,6 +269,8 @@ def _inference_category(r: dict) -> tuple[str, str]:
         return "annotation", "annotation_write_failed"
     if (r["review_reason"] or "").startswith("original image could not be read"):
         return "inference", "image_unreadable"
+    if (r["review_reason"] or "").startswith("frame unreadable"):
+        return "inference", "frame_unreadable"
     return "inference", "inference_error"
 
 

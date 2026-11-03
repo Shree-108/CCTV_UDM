@@ -36,6 +36,13 @@ def make_video(path: Path, images: list[np.ndarray], seconds_each: float = 1.0, 
     return path
 
 
+def empty_scene(value: int, h: int = 480, w: int = 640) -> np.ndarray:
+    """A plain scene with sensor-like noise. A perfectly flat picture is a blank / corrupted frame
+    (backend.extraction.frame_quality) and is never saved or analysed."""
+    noise = np.random.default_rng(value).integers(-20, 21, (h, w, 1))
+    return np.clip(value + noise, 0, 255).astype(np.uint8).repeat(3, axis=2)
+
+
 def wait(client, url, timeout=120):
     t0 = time.time()
     while time.time() - t0 < timeout:
@@ -78,12 +85,12 @@ def real_model(client, monkeypatch):
 
 # ------------------------------------------------------------------ weights required
 def test_refuses_without_trained_weights(client, tmp_path):
-    ext = extract(client, make_video(tmp_path / "blank.mp4", [np.full((480, 640, 3), 128, np.uint8)] * 2))
+    ext = extract(client, make_video(tmp_path / "blank.mp4", [empty_scene(128)] * 2))
     r = client.post(f"/api/extractions/{ext['id']}/detect", json={})
     assert r.status_code == 422 and "weights not found" in r.json()["detail"]   # no silent substitute
     assert client.get(f"/api/extractions/{ext['id']}/detections").json()["runs"] == []
     # automatic detection after extraction records the problem visibly
-    ext2 = extract(client, make_video(tmp_path / "blank2.mp4", [np.full((480, 640, 3), 90, np.uint8)] * 2),
+    ext2 = extract(client, make_video(tmp_path / "blank2.mp4", [empty_scene(90)] * 2),
                    run_detection=True)
     time.sleep(0.5)
     runs = client.get(f"/api/extractions/{ext2['id']}/detections").json()["runs"]
@@ -99,7 +106,7 @@ def test_refuses_unreadable_weights(client, tmp_path, monkeypatch):
     monkeypatch.setattr(mc, "uniform_model_path", lambda: bad)
     models._key = None
     try:
-        ext = extract(client, make_video(tmp_path / "blank3.mp4", [np.full((480, 640, 3), 70, np.uint8)] * 2))
+        ext = extract(client, make_video(tmp_path / "blank3.mp4", [empty_scene(70)] * 2))
         r = client.post(f"/api/extractions/{ext['id']}/detect", json={})
         assert r.status_code == 422, r.text
         assert client.get(f"/api/extractions/{ext['id']}/detections").json()["runs"] == []
@@ -122,7 +129,7 @@ def test_older_result_files_are_normalized():
 # ------------------------------------------------------------------ real model
 def test_no_detection_case(client, real_model, tmp_path):
     """Frames without people: NO_UNIFORM_DETECTED, one row each, detection fields blank."""
-    blank = np.full((480, 640, 3), 128, np.uint8)
+    blank = empty_scene(128)
     ext = extract(client, make_video(tmp_path / "empty_scene.mp4", [blank, blank]))
     run = run_detection(client, ext)
     assert run["state"] == "done" and run["total"] == 2 and run["succeeded"] == 2 and run["failed"] == 0
@@ -172,7 +179,7 @@ class FakePerson:
 
 
 def test_one_row_per_detection_and_failures_isolated(client, real_model, tmp_path, monkeypatch):
-    imgs = [np.full((480, 640, 3), v, np.uint8) for v in (40, 90, 140, 190)]
+    imgs = [empty_scene(v) for v in (40, 90, 140, 190)]
     ext = extract(client, make_video(tmp_path / "four.mp4", imgs))                # frames at 0,1,2,3 s
     calls = {"n": 0}
 
@@ -221,7 +228,7 @@ def test_one_row_per_detection_and_failures_isolated(client, real_model, tmp_pat
 
 
 def test_duplicate_run_reused_and_threshold_validated(client, real_model, tmp_path):
-    ext = extract(client, make_video(tmp_path / "dup.mp4", [np.full((480, 640, 3), 100, np.uint8)]))
+    ext = extract(client, make_video(tmp_path / "dup.mp4", [empty_scene(100)]))
     a = run_detection(client, ext, threshold=0.8)
     b = client.post(f"/api/extractions/{ext['id']}/detect", json={"threshold": 0.8}).json()
     assert b["reused"] is True and b["id"] == a["id"]

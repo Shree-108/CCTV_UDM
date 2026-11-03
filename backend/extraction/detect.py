@@ -42,6 +42,7 @@ import numpy as np
 
 from backend.core.config import ROOT
 from backend.core.storage import StorageBackend, get_storage
+from backend.extraction import frame_quality
 from backend.extraction.plan import hhmmss
 from backend.uniform.classifier import upper_body_box
 
@@ -200,8 +201,12 @@ def run(frames: list[dict], out_dir: Path, models, cfg: dict, threshold: float, 
                     "detection_index": "", "detection_type": "", "person_confidence": "", "person_count": "",
                     "recording_timestamp": fr.get("recording_timestamp", ""), "review_reason": "", "person_reason": ""}
             img = cv2.imread(str(_abs(fr["original_image_path"])))
+            unreadable = frame_quality.problem(img) if img is not None else None
             if img is None:
                 rows = [base | {"review_reason": "original image could not be read"}]
+                stats["failed"] += 1
+            elif unreadable:                     # e.g. a grey frame saved by an extraction made before the check
+                rows = [base | {"review_reason": f"frame unreadable: {unreadable}"}]
                 stats["failed"] += 1
             else:
                 try:
