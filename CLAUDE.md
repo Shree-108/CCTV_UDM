@@ -11,6 +11,7 @@ and reports per screenshot in a fixed six-column business CSV. See README.md for
 ```bash
 .venv\Scripts\python -m uvicorn backend.main:app --host 127.0.0.1 --port 8010   # API
 npm run dev                                                                     # dashboard
+npm run dev:all                                                                 # API + dashboard together
 .venv\Scripts\python -m pytest tests -q                                         # tests (temp storage)
 npx tsc --noEmit                                                                # frontend type check
 ```
@@ -33,6 +34,12 @@ There is no JS test runner and no ESLint config; frontend behaviour is checked w
    (5 fps by default), ByteTrack, temporal voting, alerts, annotated H.264 video. Video Analysis
    `?mode=full`; also started from the dashboard's "Annotated video" panel. Its results are NOT in the
    business CSVs.
+
+3. **S3 paths** (both reuse pipeline 1 via `S3BatchRunner.analyse_file`):
+   `POST /api/s3/process` (cart batch: every video in a day's `input_data` → one `<cart>.xlsx`, no login) and
+   the admin **S3 Upload** page `/s3-upload` → `POST /api/s3/uploads` (`backend/extraction/s3_upload.py`, admin
+   login `backend/core/auth.py`): one video → conditional PUT to `input_data` → analysis →
+   `output_data/<cart>_<video>_<job>.csv`; completed only after the CSV is verified in S3; same video + card = one job.
 
 ## Key modules
 

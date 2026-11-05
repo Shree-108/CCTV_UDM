@@ -30,12 +30,17 @@ WIDTHS = [8.73, 20.0, 13.0, 12.0, 11.0, 17.0, 70.0]
 FILENAME_TIME = re.compile(r"^\d{8}_(\d{14})_\d{14}_")       # 20261029_20261029183009_20261029183120_183009.mp4
 
 
-def store_name(cart: str) -> str:
+def known_carts() -> dict[str, str]:
+    """Carts listed in config/carts.yaml -> store name."""
     try:
         names = yaml.safe_load(CARTS_CONFIG.read_text(encoding="utf-8")) or {}
     except FileNotFoundError:
         names = {}
-    return str(names.get(cart) or "")
+    return {str(k): str(v or "") for k, v in names.items()}
+
+
+def store_name(cart: str) -> str:
+    return known_carts().get(cart, "")
 
 
 def cart_id(cart: str) -> int | str:
@@ -110,6 +115,21 @@ def rows(cart: str, records: list[dict]) -> list[dict]:
                     "source_video": r["source_video"], "image_filename": r["image_filename"],
                     "original_image_path": r["original_image_path"]})
     return out
+
+
+def write_csv(path: Path, report_rows: list[dict]) -> Path:
+    """The same columns and values as the xlsx (admin uploads, backend/extraction/s3_upload.py): Date as
+    DD-MM-YYYY, Time Stamp as HH:MM:SS (or "video 00:01:23"), blank Date / score when unknown."""
+    import csv
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(HEADERS)
+        for r in report_rows:
+            w.writerow([r["cart_id"], r["store"], f"{r['date']:%d-%m-%Y}" if r["date"] else "",
+                        r["time"] if isinstance(r["time"], str) else r["time"].strftime("%H:%M:%S"),
+                        r["img"], "" if r["score"] is None else r["score"], r["remark"]])
+    return path
 
 
 def write_xlsx(path: Path, report_rows: list[dict]) -> Path:

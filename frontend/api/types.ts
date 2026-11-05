@@ -725,3 +725,25 @@ export interface PreviouslyReceived {
   media_id: string; filename: string; received_at: string
   jobs: { job_id: string; state: string; created_at: string }[]
 }
+
+/** A Card ID that can be chosen for admin uploads (config/carts.yaml). */
+export interface S3Card { card_id: number; cart: string; store_name: string }
+
+export type S3UploadState = 'queued' | 'uploading' | 'processing' | 'generating_report' | 'uploading_output' | 'completed' | 'failed'
+
+/** Admin video upload: S3 input_data -> analysis -> CSV in output_data (GET /api/s3/uploads/{id}). */
+export interface S3Upload {
+  id: string; created_at: string; updated_at: string; finished_at: string | null; created_by: string | null
+  card_id: number; cart: string; store_name: string | null
+  filename: string; s3_name: string; size_bytes: number; sha256: string
+  day: string; day_source: 'file_name' | 'selected'
+  bucket: string; input_key: string; output_key: string; s3_input: string; s3_output: string
+  state: S3UploadState; failed_stage: S3UploadState | null; error: string | null; attempts: number
+  input_verified: boolean
+  media_id: string | null; extraction_id: string | null; detection_run_id: string | null
+  summary: { screenshots: number; unreadable_frames: number; people: number; uniform: number; not_uniform: number; manual_review: number } | null
+  report_sha256: string | null; report_url: string | null
+  analysis: { step: string; extraction_progress: number | null; detection_progress: number | null } | null
+  /** CSV rows (header names as in the report, e.g. "img name ") once completed; only on GET by id. */
+  report_rows?: Record<string, string>[] | null
+}

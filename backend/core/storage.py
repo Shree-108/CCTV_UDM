@@ -54,8 +54,8 @@ class LocalStorage:
             "mode": self.name, "path": rel(STORAGE), "frames_path": rel(STORAGE / "extractions"),
             "s3": {"configured": bool(bucket), "bucket": bucket or None, "uploads_enabled": False,
                    "note": ("S3 evidence storage is not implemented: evidence files are on this PC's local disk. S3 is "
-                                     "used only by the cart batches (POST /api/s3/process), which upload their results "
-                                     "to the cart's output_data folder.")},
+                                     "used only by the cart batches (POST /api/s3/process) and the admin S3 Upload page "
+                                     "(input videos to input_data, reports to the cart's output_data folder).")},
         }
 
 

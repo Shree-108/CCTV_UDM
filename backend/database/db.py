@@ -103,6 +103,27 @@ CREATE TABLE IF NOT EXISTS frame_detection_runs (
   output_dir TEXT                       -- project-relative: storage/extractions/<ext>/detections/<run>
 );
 CREATE INDEX IF NOT EXISTS ix_detruns_extraction ON frame_detection_runs(extraction_id, created_at);
+CREATE TABLE IF NOT EXISTS s3_uploads (    -- admin video uploads to S3 (backend/extraction/s3_upload.py)
+  id TEXT PRIMARY KEY,                  -- upl-YYYYMMDD-HHMMSS-xxxxxx
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT, created_by TEXT,
+  card_id INTEGER NOT NULL, cart TEXT NOT NULL, store_name TEXT,
+  filename TEXT NOT NULL,               -- as uploaded by the admin
+  s3_name TEXT NOT NULL,                -- safe file name used in the S3 key
+  size_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL,
+  day TEXT NOT NULL,                    -- S3 day folder, DD-MM-YYYY
+  day_source TEXT NOT NULL,             -- file_name | selected
+  bucket TEXT NOT NULL, input_key TEXT NOT NULL, output_key TEXT NOT NULL,
+  state TEXT NOT NULL,                  -- queued | uploading | processing | generating_report | uploading_output | completed | failed
+  failed_stage TEXT,                    -- the state in which it failed
+  error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  input_verified INTEGER NOT NULL DEFAULT 0,  -- 1 = the video is in S3 with the same size and SHA-256
+  local_path TEXT,                      -- received video until it is verified in S3 (then deleted)
+  media_id TEXT, extraction_id TEXT, detection_run_id TEXT,
+  summary TEXT,                         -- JSON counts of the report
+  report_path TEXT, report_sha256 TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_s3_uploads_sha ON s3_uploads(sha256, cart);
 """
 
 # Columns added after the first release (additive migrations, applied on start-up).
@@ -132,7 +153,7 @@ MEDIA_COLUMNS = {
     "sha256": "TEXT",
 }
 
-JSON_COLS = {"area", "settings", "live", "files", "plan", "failures"}
+JSON_COLS = {"area", "settings", "live", "files", "plan", "failures", "summary"}
 CAMERA_COLS = {"id", "store_id", "name", "source_type", "source", "area", "enabled", "cursor"}
 
 
@@ -438,6 +459,37 @@ class DB:
         their manifest; the job itself cannot resume."""
         self._write("UPDATE extractions SET state='interrupted', error='Server stopped during extraction; "
                     "frames saved before that are kept in the manifest' WHERE state IN ('queued','running')")
+
+    # ------------------------------------------------------------------ admin uploads to S3
+    def add_s3_upload(self, u: dict) -> None:
+        u = {k: (json.dumps(v) if k in JSON_COLS and v is not None else v) for k, v in u.items()}
+        self._write(f"INSERT INTO s3_uploads ({','.join(u)}) VALUES ({','.join('?' * len(u))})", list(u.values()))
+
+    def update_s3_upload(self, uid: str, **fields: Any) -> None:
+        fields["updated_at"] = now_iso()
+        vals = [json.dumps(v) if k in JSON_COLS and v is not None else v for k, v in fields.items()]
+        self._write(f"UPDATE s3_uploads SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?", [*vals, uid])
+
+    def s3_upload(self, uid: str) -> dict | None:
+        with self._conn() as c:
+            return self._row(c.execute("SELECT * FROM s3_uploads WHERE id=?", (uid,)).fetchone())
+
+    def s3_uploads(self, limit: int = 50) -> list[dict]:
+        with self._conn() as c:
+            return [self._row(r) for r in c.execute("SELECT * FROM s3_uploads ORDER BY created_at DESC, id DESC LIMIT ?",
+                                                     (limit,))]
+
+    def s3_upload_by_sha256(self, sha256: str, cart: str) -> dict | None:
+        """The latest upload of the same video (same content) for the same cart."""
+        with self._conn() as c:
+            return self._row(c.execute("SELECT * FROM s3_uploads WHERE sha256=? AND cart=? ORDER BY created_at DESC, "
+                                       "id DESC LIMIT 1", (sha256, cart)).fetchone())
+
+    def interrupt_s3_uploads(self) -> None:
+        """Uploads that were in progress when the server stopped: failed in that stage; Retry resumes them."""
+        self._write("UPDATE s3_uploads SET failed_stage=state, state='failed', updated_at=?, "
+                    "error='Server stopped during ' || replace(state, '_', ' ') || '; use Retry' "
+                    "WHERE state NOT IN ('completed','failed')", (now_iso(),))
 
     # ------------------------------------------------------------------ analytics
     def analytics(self, start: str | None = None) -> dict:

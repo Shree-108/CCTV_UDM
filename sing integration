@@ -1,0 +1,26 @@
+ .env.example                                   |   8 [32m+[m
+ CLAUDE.md                                      |   7 [32m+[m
+ app/s3-upload/page.tsx                         |  12 [32m+[m
+ backend/api/routes.py                          |  23 [32m+[m[31m-[m
+ backend/api/routes_auth.py                     |  38 [32m+++[m
+ backend/api/routes_s3_uploads.py               | 107 [32m++++++++[m
+ backend/core/auth.py                           | 142 [32m+++++++++++[m
+ backend/core/s3.py                             |  70 [32m++++++[m
+ backend/core/storage.py                        |   4 [32m+[m[31m-[m
+ backend/database/db.py                         |  54 [32m+++[m[31m-[m
+ backend/extraction/cart_report.py              |  24 [32m+[m[31m-[m
+ backend/extraction/s3_batch.py                 |  12 [32m+[m[31m-[m
+ backend/extraction/s3_upload.py                | 254 [32m+++++++++++++++++++[m
+ backend/main.py                                |  14 [32m+[m[31m-[m
+ frontend/api/client.ts                         |  32 [32m++[m[31m-[m
+ frontend/api/endpoints.ts                      |  22 [32m+[m[31m-[m
+ frontend/api/types.ts                          |  22 [32m++[m
+ frontend/components/shell/nav.ts               |   3 [32m+[m[31m-[m
+ frontend/features/results/ResultsDashboard.tsx |   2 [32m+[m[31m-[m
+ frontend/features/s3upload/S3UploadPage.tsx    | 336 [32m+++++++++++++++++++++++++[m
+ package.json                                   |   1 [32m+[m
+ scripts/dev-all.mjs                            |  36 [32m+++[m
+ tests/conftest.py                              |   7 [32m+[m
+ tests/test_master_csv.py                       |   2 [32m+[m[31m-[m
+ tests/test_s3_uploads.py                       | 302 [32m++++++++++++++++++++++[m
+ 25 files changed, 1508 insertions(+), 26 deletions(-)

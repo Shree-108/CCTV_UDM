@@ -18,6 +18,13 @@ os.environ["SU_CAPTURE_SCHEDULER"] = "off"
 # Never the real bucket or AWS keys from the project's .env (load_dotenv does not override these).
 for _k in ("SU_S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
     os.environ[_k] = ""
+# A test admin account (never the one in the project's .env). Password: "test-password" (few iterations: fast).
+os.environ["SU_ADMIN_USERNAME"] = "admin"
+os.environ["SU_ADMIN_PASSWORD_HASH"] = ("pbkdf2_sha256$1000$00112233445566778899aabbccddeeff$"
+                                        + __import__("hashlib").pbkdf2_hmac("sha256", b"test-password",
+                                          bytes.fromhex("00112233445566778899aabbccddeeff"), 1000).hex())
+os.environ["SU_SESSION_SECRET"] = "test-session-secret"
+os.environ["SU_COOKIE_SECURE"] = "0"
 
 import pytest  # noqa: E402
 

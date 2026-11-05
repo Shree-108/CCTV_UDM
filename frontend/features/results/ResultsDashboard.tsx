@@ -195,7 +195,7 @@ function StatusBadges({ d }: { d: FrameResults }) {
     <span className="flex flex-wrap gap-1.5" title={`${s.s3.note} Files: ${s.frames_path}/`}>
       <Badge tone="neutral" dot><HardDrive className="mr-0.5 inline size-3" aria-hidden />Local storage</Badge>
       <Badge tone={s.s3.configured ? 'warn' : 'neutral'}>
-        <Database className="mr-0.5 inline size-3" aria-hidden />{s.s3.configured ? 'S3 configured · uploads not implemented' : 'S3 not configured'}
+        <Database className="mr-0.5 inline size-3" aria-hidden />{s.s3.configured ? 'S3: cart reports only · evidence stays local' : 'S3 not configured'}
       </Badge>
       <Badge tone="neutral" title={d.cctv.note}><Cctv className="mr-0.5 inline size-3" aria-hidden />CCTV API not connected</Badge>
     </span>

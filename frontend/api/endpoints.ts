@@ -1,9 +1,9 @@
-import { api, qs } from './client'
+import { api, apiUpload, qs } from './client'
 import type {
   Alert, Analysis, AnalysisDetail, Analytics, Area, DetectionImage, DetectionRun, ExtractedFrame, Extraction, ExtractionPlan,
   FrameResults,
   AnnotatedVideo, Health, HistoryRecord, Layout, MasterCsvStatus, Media, MonthGrouping, MonthReport, ReportsOverview,
-  Overview, SamplingStrategy, ScreenshotEvidence, Settings, SettingSchema, UniformCompliance,
+  Overview, S3Card, S3Upload, SamplingStrategy, ScreenshotEvidence, Settings, SettingSchema, UniformCompliance,
 } from './types'
 
 /** Filters shared by the Results dashboard and its CSV exports. */
@@ -85,4 +85,22 @@ export const Api = {
   /** Uniform compliance reports: one row per screenshot / one row per person found. */
   screenshotSummaryCsvPath: (p: ResultsFilter = {}) => `/api/frame-results/screenshot_summary.csv${qs(p)}`,
   complianceDetailsCsvPath: (p: ResultsFilter = {}) => `/api/frame-results/uniform_compliance_details.csv${qs(p)}`,
+
+  /** Admin login (HttpOnly session cookie) for the S3 upload workflow. */
+  me: () => api<{ username: string }>('/api/auth/me'),
+  login: (username: string, password: string) => api<{ username: string }>('/api/auth/login', { body: { username, password } }),
+  logout: () => api<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  s3Cards: () => api<{ cards: S3Card[] }>('/api/s3/cards'),
+  /** Video -> S3 input_data -> analysis -> CSV in output_data. 202 new / retried job, 200 duplicate. */
+  s3Upload: (file: File, cardId: number, date: string | undefined, onProgress: (sent: number, total: number) => void,
+    signal?: AbortSignal) => {
+    const f = new FormData()
+    f.append('card_id', String(cardId))
+    if (date) f.append('date', date)
+    f.append('file', file)
+    return apiUpload<S3Upload & { how: 'created' | 'duplicate' | 'retried' }>('/api/s3/uploads', f, onProgress, signal)
+  },
+  s3Uploads: (limit = 20) => api<{ uploads: S3Upload[] }>(`/api/s3/uploads${qs({ limit })}`),
+  s3UploadJob: (id: string) => api<S3Upload>(`/api/s3/uploads/${id}`),
+  s3Retry: (id: string) => api<S3Upload>(`/api/s3/uploads/${id}/retry`, { method: 'POST' }),
 }

@@ -148,7 +148,7 @@ class S3BatchRunner:
                 self._set(f, state="skipped", error="Not a video file; screenshots are sampled from videos only")
                 continue
             try:
-                records += self._run_file(s3c, batch, cart, f)
+                records += self.analyse_file(s3c, batch["bucket"], batch["threshold"], cart["cart"], f)
             except Exception as e:  # noqa: BLE001 - one bad file must not stop the cart
                 log.exception("S3 batch %s: %s failed", batch["id"], key)
                 self._set(f, state="failed", error=str(e))
@@ -173,12 +173,14 @@ class S3BatchRunner:
         self._set(cart, state="done", summary=summary, report=f"s3://{bucket}/{key}",
                   error=None if not counts["failed"] else f"{counts['failed']} video(s) could not be analysed (see the files)")
 
-    def _run_file(self, s3c, batch: dict, cart: dict, f: dict) -> list[dict]:
-        """Download and analyse one video; returns its screenshot records (screenshots.screenshot_results)."""
+    def analyse_file(self, s3c, bucket: str, threshold: float | None, cart: str, f: dict) -> list[dict]:
+        """Download s3://bucket/f["key"] and analyse it; returns its screenshot records
+        (screenshots.screenshot_results). Also used by the admin uploads (s3_upload.py). `f` is updated
+        while it runs: state downloading -> processing -> done / failed, media_id, extraction_id, ..."""
         self._set(f, state="downloading")
         path = new_upload_path(f["name"])
         try:
-            s3c.download_file(batch["bucket"], f["key"], str(path))
+            s3c.download_file(bucket, f["key"], str(path))
             media = probe(path, f["name"], "video", path.stat().st_size)
         except Exception:
             path.unlink(missing_ok=True)
@@ -189,7 +191,7 @@ class S3BatchRunner:
         start = cart_report.recording_start(f["name"])
         self._set(f, state="processing", media_id=media["id"], recording_start_time=start)
         job, _ = self.extractions.create(media, None, None, new_run=True, run_detection=True,
-                                         threshold=batch["threshold"], strategy=None, store_id=cart["cart"],
+                                         threshold=threshold, strategy=None, store_id=cart,
                                          recording_start_time=start, source="s3")
         self._set(f, extraction_id=job["id"])
         ext, run = self._wait(job["id"])

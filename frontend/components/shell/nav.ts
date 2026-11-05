@@ -1,5 +1,5 @@
 import {
-  AlertTriangle, BarChart3, Cctv, FileVideo, Film, HelpCircle, History, ImageIcon, LayoutGrid, Settings, Table2, UploadCloud,
+  AlertTriangle, BarChart3, Cctv, CloudUpload, FileVideo, Film, HelpCircle, History, ImageIcon, LayoutGrid, Settings, Table2, UploadCloud,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -18,6 +18,7 @@ export const NAV: NavGroup[] = [
   { label: 'Workspace', items: [
     { href: '/analysis/video', label: 'Video Analysis', icon: FileVideo, badge: 'running', description: 'Upload a CCTV video: 4 random frames checked by the uniform model (full-video mode also available)' },
     { href: '/results', label: 'Results Dashboard', icon: Table2, description: 'Upload a video, check 4 random screenshots, results history and the cumulative CSV' },
+    { href: '/s3-upload', label: 'S3 Upload', icon: CloudUpload, description: 'Admin: upload a video for a card to S3, analyse it and get the CSV report' },
     { href: '/alerts', label: 'Alerts', icon: AlertTriangle, badge: 'newAlerts', description: 'Confirmed uniform violations and low-confidence results' },
   ] },
   { label: 'System', items: [

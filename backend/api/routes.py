@@ -122,13 +122,10 @@ def layouts():
 
 
 # ------------------------------------------------------------------ media upload
-@router.post("/media")
-async def upload_media(request: Request, file: UploadFile = File(...)):
-    kind = kind_of(file.filename or "")
-    if not kind:
-        raise HTTPException(415, "Unsupported file type. Use JPG, PNG, BMP, WEBP, MP4, AVI, MOV, MKV, M4V or WEBM.")
+async def receive(file: UploadFile, path, kind: str) -> tuple[int, str]:
+    """Stream an upload to `path` within the size limit for its kind; returns (size, sha256 hex).
+    Nothing half-written is kept on failure."""
     limit = (MAX_IMAGE_MB if kind == "image" else MAX_VIDEO_MB) * 2 ** 20
-    path = new_upload_path(file.filename)
     size = 0
     digest = hashlib.sha256()
     try:
@@ -141,16 +138,26 @@ async def upload_media(request: Request, file: UploadFile = File(...)):
                     raise HTTPException(413, f"File too large (max {limit // 2 ** 20} MB for {kind}s)")
                 f.write(chunk)
                 digest.update(chunk)
-    except OSError as e:                         # disk full, permissions: nothing half-written is kept
+    except OSError as e:                         # disk full, permissions
         path.unlink(missing_ok=True)
         raise HTTPException(507, f"The file could not be saved on the server ({e.strerror or e.__class__.__name__})")
+    return size, digest.hexdigest()
+
+
+@router.post("/media")
+async def upload_media(request: Request, file: UploadFile = File(...)):
+    kind = kind_of(file.filename or "")
+    if not kind:
+        raise HTTPException(415, "Unsupported file type. Use JPG, PNG, BMP, WEBP, MP4, AVI, MOV, MKV, M4V or WEBM.")
+    path = new_upload_path(file.filename)
+    size, digest = await receive(file, path, kind)
     try:
         meta = probe(path, file.filename, kind, size)
     except ValueError as e:
         path.unlink(missing_ok=True)
         raise HTTPException(422, str(e))
     db = st(request).db
-    meta["sha256"] = digest.hexdigest()
+    meta["sha256"] = digest
     db.add_media(meta)
     return _media_out(meta) | {"previously_received": _previously_received(db, meta)}
 
