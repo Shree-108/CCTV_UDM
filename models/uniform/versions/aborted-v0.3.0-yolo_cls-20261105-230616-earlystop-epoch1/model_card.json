@@ -1,0 +1,35 @@
+{
+  "dataset_version": "udm_v1-11145c5fe9",
+  "train_counts": {
+    "train/non_uniform/cctv": 361,
+    "train/uniform/cctv": 118,
+    "val/non_uniform/cctv": 20,
+    "val/uniform/cctv": 14,
+    "train/non_uniform/earlier_crops": 83,
+    "train/uniform/earlier_crops": 141,
+    "train/non_uniform/generated_lookalikes": 108
+  },
+  "crop_mode": "garment",
+  "input": "224x224 letterboxed",
+  "seed": 42,
+  "splits": "data/udm_v1/splits.yaml (video-level; test frozen)",
+  "created": "20261105-230616",
+  "status": "candidate - not approved for production",
+  "backend": "yolo_cls",
+  "arch": "yolo11n-cls (ImageNet-pretrained)",
+  "classes": [
+    "non_uniform",
+    "uniform"
+  ],
+  "train_config": {
+    "epochs": 30,
+    "batch": 32,
+    "optimizer": "AdamW",
+    "lr0": 0.0005,
+    "cos_lr": true,
+    "patience": 8,
+    "imgsz": 224,
+    "augment": "fliplr 0.5, hsv, scale 0.2, erasing 0.3; no rotation / vertical flip / RandAugment (would turn stripes)"
+  },
+  "sha256": "e615bde5b1af131f65e019f8dcefdc273a1f1c879a3dfdcbda8fce5bef33efa6"
+}

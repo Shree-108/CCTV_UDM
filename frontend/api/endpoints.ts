@@ -3,7 +3,7 @@ import type {
   Alert, Analysis, AnalysisDetail, Analytics, Area, DetectionImage, DetectionRun, ExtractedFrame, Extraction, ExtractionPlan,
   FrameResults,
   AnnotatedVideo, Health, HistoryRecord, Layout, MasterCsvStatus, Media, MonthGrouping, MonthReport, ReportsOverview,
-  Overview, S3Card, S3Upload, SamplingStrategy, ScreenshotEvidence, Settings, SettingSchema, UniformCompliance,
+  Overview, S3Card, S3Output, S3Upload, SamplingStrategy, ScreenshotEvidence, Settings, SettingSchema, UniformCompliance,
 } from './types'
 
 /** Filters shared by the Results dashboard and its CSV exports. */
@@ -46,8 +46,12 @@ export const Api = {
     api<ExtractionPlan>(`/api/media/${mediaId}/extraction-plan${qs(p)}`),
   startExtraction: (b: { media_id: string; sampling_strategy?: SamplingStrategy; interval_seconds?: number; sample_count?: number;
     random_seed?: number; include_initial: boolean; new_run?: boolean; run_detection?: boolean; threshold?: number;
-    store_id?: string; camera_id?: string; recording_start_time?: string }) =>
+    store_id?: string; camera_id?: string; recording_start_time?: string; card_id?: number; s3_day?: string }) =>
     api<Extraction>('/api/extractions', { body: b }),
+  /** Card IDs a job's CSV can be filed under in S3 (no login needed; never any credential). */
+  s3OutputCards: () => api<{ bucket: string; output_folder: string; cards: S3Card[] }>('/api/s3-output/cards'),
+  retryS3Output: (runId: string, b: { card_id?: number } = {}) =>
+    api<S3Output>(`/api/detection-runs/${runId}/s3-output/retry`, { body: b }),
   extraction: (id: string) => api<Extraction>(`/api/extractions/${id}`),
   extractions: (media_id?: string) => api<{ extractions: Extraction[] }>(`/api/extractions${qs({ media_id })}`),
   cancelExtraction: (id: string) => api<{ ok: boolean }>(`/api/extractions/${id}/cancel`, { method: 'POST' }),

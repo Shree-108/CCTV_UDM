@@ -22,7 +22,7 @@ from backend.extraction.screenshots import remark
 from tests.test_compliance_reports import Person
 from tests.test_extraction import MEDIA
 from tests.test_frame_detection import empty_scene, make_video, real_model, wait  # noqa: F401  (fixture re-used)
-from tests.test_s3_batch import BUCKET, DAY, FakeS3, fake_s3, sheet, wait_batch  # noqa: F401  (fixture re-used)
+from tests.test_s3_batch import BUCKET, DAY, FakeS3, fake_s3, local_sheet, wait_batch  # noqa: F401  (fixture re-used)
 
 FPS = 20
 
@@ -202,7 +202,7 @@ def test_s3_cart_report_keeps_rows_of_a_video_with_only_unreadable_frames(client
     assert c["state"] == "done" and c["summary"]["screenshots"] == 8 and c["summary"]["failed"] == 1
     files = {f["name"]: f for f in c["files"]}
     assert files["a_broken.mp4"]["state"] == "failed" and files["a_broken.mp4"]["screenshots"] == 4
-    header, *rows = sheet(fake, f"{DAY}/cart_50/output_data/cart_50.xlsx")
+    header, *rows = local_sheet(b["id"], "cart_50")
     assert len(rows) == 8
     unreadable = [r for r in rows if "frame unreadable" in r[6]]
     assert len(unreadable) == 4 and all(r[5] is None for r in unreadable)    # blank score, never 0

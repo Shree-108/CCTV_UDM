@@ -298,6 +298,39 @@ export interface Extraction {
   manifest_url: string
   failures_url: string
   reused?: boolean
+  /** 1 = every finished detection run's CSV is uploaded to S3 and verified (0 / null: older jobs, admin uploads) */
+  s3_output?: number | null
+  s3_cart?: string | null
+  s3_day?: string | null
+  /** GET /api/extractions/{id} only: "completed" only once the CSV is verified in S3 (jobs with S3 output).
+   *  The latest run's upload itself is DetectionRun.s3_output. */
+  status?: 'processing' | 'completed' | 'failed' | 'extracted'
+}
+
+export type S3OutputState = 'queued' | 'generating_report' | 'uploading' | 'uploading_images' | 'completed' | 'failed'
+
+/** The CSV rows + detection images of one detection run, appended to today's (Asia/Kolkata)
+ *  s3://<bucket>/<MM-YYYY>/<DD-MM-YYYY>/card_<N>/output_data/card<N>_YYYY_MM_DD.csv. */
+export interface S3Output {
+  run_id: string
+  extraction_id: string
+  state: S3OutputState
+  failed_stage: S3OutputState | null
+  error: string | null
+  attempts: number
+  bucket: string
+  cart: string | null
+  day: string | null
+  day_source: 'processing_date' | 'selected' | 'recording_start' | 'file_name' | null
+  folder: string
+  csv_first_row: number | null
+  images_uploaded: number | null
+  key: string | null
+  s3_uri: string | null
+  size_bytes: number | null
+  sha256: string | null
+  verified: boolean
+  finished_at: string | null
 }
 
 export type FrameOutcome = 'UNIFORM_DETECTED' | 'NO_UNIFORM_DETECTED' | 'REVIEW_REQUIRED' | 'PROCESSING_FAILED'
@@ -327,6 +360,8 @@ export interface DetectionRun {
   results_url: string
   screenshot_summary_url: string
   compliance_details_url: string
+  /** the run's CSV upload to S3; null when its job has no S3 output */
+  s3_output: S3Output | null
   reused?: boolean
 }
 
@@ -729,7 +764,7 @@ export interface PreviouslyReceived {
 /** A Card ID that can be chosen for admin uploads (config/carts.yaml). */
 export interface S3Card { card_id: number; cart: string; store_name: string }
 
-export type S3UploadState = 'queued' | 'uploading' | 'processing' | 'generating_report' | 'uploading_output' | 'completed' | 'failed'
+export type S3UploadState = 'queued' | 'uploading' | 'processing' | 'generating_report' | 'uploading_output' | 'uploading_images' | 'completed' | 'failed'
 
 /** Admin video upload: S3 input_data -> analysis -> CSV in output_data (GET /api/s3/uploads/{id}). */
 export interface S3Upload {
@@ -743,6 +778,7 @@ export interface S3Upload {
   media_id: string | null; extraction_id: string | null; detection_run_id: string | null
   summary: { screenshots: number; unreadable_frames: number; people: number; uniform: number; not_uniform: number; manual_review: number } | null
   report_sha256: string | null; report_url: string | null
+  csv_first_row: number | null; images_uploaded: number | null
   analysis: { step: string; extraction_progress: number | null; detection_progress: number | null } | null
   /** CSV rows (header names as in the report, e.g. "img name ") once completed; only on GET by id. */
   report_rows?: Record<string, string>[] | null

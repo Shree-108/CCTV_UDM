@@ -6,7 +6,10 @@ sources:
   uniform: data/uniform           # the striped store shirt: front/side/back, near/far, lit/dim, partial
   non_uniform: data/non_uniform   # plain black/white, horizontal stripes, checks, prints, jackets,
                                   # T-shirts, similar striped shirts, customers in black/white
-  uncertain: data/uncertain       # torso mostly hidden, heavy blur, too tiny to judge
+  # Two classes, like the production model (v0.2.0: non_uniform / uniform). "Review required" comes from the
+  # visibility gates and thresholds, not from a third trained class. data/uncertain/ is kept on disk (unused):
+  # put crops that cannot be judged there so they stay out of training.
+  # uncertain: data/uncertain
 
 output_dir: data/cls              # built split: data/cls/{train,val}/{class}/
 val_split: 0.2

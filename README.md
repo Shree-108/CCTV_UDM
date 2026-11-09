@@ -45,8 +45,18 @@ to `storage/exports/uniform_compliance_master.csv`.
 Also included: image analysis, alerts, scheduled capture from **local** test sources, frame extraction,
 and dataset tools for training.
 
-**Not included:** live CCTV / RTSP / NVR connections (only an interface for a future integration), cloud
-storage (S3 is not implemented; everything stays on local disk), user login or access control.
+**S3:** every analysed video is treated as today's video (Asia/Kolkata, never the recording date). Its report
+rows are appended automatically to today's CSV
+`s3://<bucket>/<MM-YYYY>/<DD-MM-YYYY>/card_<N>/output_data/card<N>_YYYY_MM_DD.csv` (e.g.
+`11-2026/08-11-2026/card_50/output_data/card50_2026_11_08.csv`): the day's first run creates it, later runs append (one
+header, earlier rows never changed, no duplicates on retries). Each row's detection image goes next to it as
+`card<N>_YYYY_MM_DD_pic<K>.jpg`; numbering continues after the highest existing pic<K> and nothing is ever
+replaced or deleted. Both are verified (size + SHA-256) before the job is shown as completed. Credentials, bucket and region come only from `.env`
+(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `SU_S3_BUCKET`). Choose the Card ID when starting
+an analysis; a failed upload is shown on the job with a Retry button.
+
+**Not included:** live CCTV / RTSP / NVR connections (only an interface for a future integration), user login
+(except the admin S3 Upload page).
 
 ## Prerequisites
 
@@ -160,6 +170,24 @@ few minutes on CPU.
 | `python -m training.prepare_dataset extract --source <video>` | one upper-body crop per tracked person, for labelling |
 | `python -m training.bootstrap` / `training.train` / `training.evaluate` | training and evaluation |
 | `python -m training.register_model` | record a new model's version and SHA-256 in the config |
+| `python -m training.apply_labels --queue <csv> --to train\|test` | copy reviewed crops into `data/<class>` or a frozen test set `data/validation/<subset>/<class>` (never overwrites, never mixes a video between train and test) |
+| `python -m training.compare_models [--candidate <folder>]` | test production and candidate models on unseen labelled images: per image actual / predicted / correct with the evidence image, and precision, recall, F1, false-positive / false-negative rate per model (`runs/model_tests/<time>/report.html`) |
+
+**Training workflow (separate from video analysis; nothing trains automatically):**
+
+1. Analyse videos as usual, then `python -m training.label_review`: it cuts every person's shirt crop from the analysed
+   screenshots into `runs/label_review/<time>/` with `cctv_label_queue.csv`. (For other footage:
+   `python -m training.prepare_dataset extract --source video.mp4`.)
+2. Fill `reviewer_label` = `uniform` / `non_uniform` (or `uncertain` / `exclude`). Label other striped or collared
+   shirts as `non_uniform`: they are the hard negatives.
+3. Put some videos aside as the TEST set first: `python -m training.apply_labels --queue <csv> --to test --subset <name>`.
+   Put the other videos into training: `--to train`. A video goes to one side only.
+4. `python -m training.train` trains a two-class (uniform / non_uniform) candidate into `models/candidates/<name>-<time>/`;
+   `models/uniform_best.pt` is never touched.
+5. `python -m training.compare_models --candidate models/candidates/<folder>` compares it with the production model on
+   the test set.
+6. Only if it is better: `python -m training.register_model --activate models/candidates/<folder> --version 0.3.0`, then
+   restart the API (`--rollback` returns to the previous model).
 
 Training data (`data/`) and outputs (`runs/`) are not in the repository: they contain images of real people.
 

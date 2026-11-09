@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useEffect, useState, type ReactNode } from 'react'
-import { AlertTriangle, Cctv, Clapperboard, Clock, Database, Download, FileSpreadsheet, Film, HardDrive, Images, RotateCcw, Table2, TriangleAlert } from 'lucide-react'
+import { AlertTriangle, Cctv, Clapperboard, Clock, Download, FileSpreadsheet, Film, HardDrive, Images, RotateCcw, Table2, TriangleAlert } from 'lucide-react'
 import { downloadUrl, url } from '../../api/client'
 import { Api, type ResultsFilter } from '../../api/endpoints'
 import type {
@@ -12,6 +12,7 @@ import type {
 } from '../../api/types'
 import { invalidate, useQuery } from '../../hooks/useQuery'
 import { cx, dateTime, duration } from '../../lib/format'
+import { useApp } from '../../stores/app'
 import { Badge, Button, Field, PageHeader, Panel, Select } from '../../components/ui/primitives'
 import { MetricCard } from '../../components/ui/kpi'
 import { DataTable } from '../../components/ui/table'
@@ -192,11 +193,8 @@ export default function ResultsDashboard() {
 function StatusBadges({ d }: { d: FrameResults }) {
   const s = d.storage
   return (
-    <span className="flex flex-wrap gap-1.5" title={`${s.s3.note} Files: ${s.frames_path}/`}>
+    <span className="flex flex-wrap gap-1.5" title={`Files: ${s.frames_path}/`}>
       <Badge tone="neutral" dot><HardDrive className="mr-0.5 inline size-3" aria-hidden />Local storage</Badge>
-      <Badge tone={s.s3.configured ? 'warn' : 'neutral'}>
-        <Database className="mr-0.5 inline size-3" aria-hidden />{s.s3.configured ? 'S3: cart reports only · evidence stays local' : 'S3 not configured'}
-      </Badge>
       <Badge tone="neutral" title={d.cctv.note}><Cctv className="mr-0.5 inline size-3" aria-hidden />CCTV API not connected</Badge>
     </span>
   )
@@ -214,7 +212,7 @@ export function ProcessPanel({ jobId, mediaId, go, startLabel = 'START PROCESSIN
     return <>
       <StageBar stages={[{ label: 'Received', status: 'done' }, { label: 'Validating', status: 'done' }, ...PENDING_STAGES]} />
       <DuplicateNotice mediaId={mediaId} />
-      <Configure mediaId={mediaId} startLabel={startLabel} onReset={() => go('')}
+      <Configure simple mediaId={mediaId} startLabel={startLabel} onReset={() => go('')}
         onStarted={(id) => { invalidate('frame-results'); invalidate('master-csv'); go(`job=${id}`) }} />
     </>
   }
@@ -234,11 +232,15 @@ function jobStages(j: Extraction, run: DetectionRun | undefined): { label: strin
   const sampling: StageStatus = active(j.state) ? 'active' : bad(j.state) ? 'failed' : 'done'
   const detecting: StageStatus = !run ? (active(j.state) ? 'pending' : bad(j.state) ? 'pending' : 'skipped')
     : run.state === 'done' ? 'done' : bad(run.state) ? 'failed' : run.state === 'running' && (run.progress ?? 0) >= 1 ? 'done' : run.state === 'running' ? 'active' : 'pending'
-  const saving: StageStatus = !run ? 'pending' : run.state === 'done' ? 'done' : bad(run.state) ? 'pending'
-    : run.state === 'running' && (run.progress ?? 0) >= 1 ? 'active' : 'pending'
-  const failed = bad(j.state) || bad(run?.state)
+  // the job's report is saved (backend: uploaded and verified) before the job is completed
+  const s3 = run?.s3_output
+  const wantsS3 = !!j.s3_output
+  const saving: StageStatus = !run ? 'pending' : bad(run.state) ? 'pending'
+    : run.state === 'done' ? (!wantsS3 || s3?.state === 'completed' ? 'done' : s3?.state === 'failed' ? 'failed' : 'active')
+      : run.state === 'running' && (run.progress ?? 0) >= 1 ? 'active' : 'pending'
+  const failed = bad(j.state) || bad(run?.state) || s3?.state === 'failed'
   const end: { label: string; status: StageStatus } = failed ? { label: 'Failed', status: 'failed' }
-    : run?.state === 'done' ? { label: 'Completed', status: 'done' }
+    : run?.state === 'done' && (!wantsS3 || s3?.state === 'completed') ? { label: 'Completed', status: 'done' }
       : !run && j.state === 'done' ? { label: 'Completed (no detection requested)', status: 'done' } : { label: 'Completed', status: 'pending' }
   return [{ label: 'Received', status: 'done' }, { label: 'Validating', status: 'done' }, { label: 'Sampling frames', status: sampling },
     { label: 'Analyzing', status: detecting }, { label: 'Saving results', status: saving }, end]
@@ -284,7 +286,8 @@ function JobProgress({ id, onNew, extra }: { id: string; onNew: () => void; extr
   const runs = useQuery(`detruns:${id}`, () => Api.detectionRuns(id), { poll: 1000 })
   const j = ext.data?.id === id ? ext.data : undefined
   const run = runs.data?.runs[0]
-  const finished = j && !active(j.state) && (!run || !active(run.state))
+  const s3Busy = !!j?.s3_output && run?.state === 'done' && (!run.s3_output || !['completed', 'failed'].includes(run.s3_output.state))
+  const finished = j && !active(j.state) && (!run || !active(run.state)) && !s3Busy
   useEffect(() => { if (finished) { invalidate('frame-results'); invalidate('master-csv') } }, [finished, run?.state])
   if (ext.error) return <Panel title="Processing"><ErrorState error={ext.error} title="This job could not be loaded" action={<Button size="sm" onClick={onNew}>Process a video</Button>} /></Panel>
   if (!j) return <Panel title="Processing"><div className="py-6 text-center text-[12px] text-fg-3">Loading…</div></Panel>
@@ -309,6 +312,7 @@ function JobProgress({ id, onNew, extra }: { id: string; onNew: () => void; extr
             run.model_version ? `Model ${run.model_version.split(' · ')[0]} · threshold ${run.threshold.toFixed(2)} · run ${run.id}` : '']
             : [active(j.state) ? 'Starts when extraction finishes (if selected).' : 'Detection was not requested for this job. Open "Job details" to run it.']}
           error={run?.error ?? null} />
+        {!!j.s3_output && <ReportSaveProblem run={run} />}
       </div>
       {j.samples && (
         <div className="mt-3">
@@ -317,6 +321,26 @@ function JobProgress({ id, onNew, extra }: { id: string; onNew: () => void; extr
         </div>
       )}
     </Panel>
+  )
+}
+
+/** Shown only when the job's report could not be saved (the backend uploads and verifies it): the reason and Retry. */
+function ReportSaveProblem({ run }: { run: DetectionRun | undefined }) {
+  const { toast } = useApp()
+  const [busy, setBusy] = useState(false)
+  const o = run?.s3_output
+  if (o?.state !== 'failed' || !run) return null
+  const retry = async () => {
+    setBusy(true)
+    try { await Api.retryS3Output(run.id); invalidate(`detruns:${run.extraction_id}`) }
+    catch (e) { toast({ tone: 'crit', title: 'Could not retry', body: (e as Error).message }) }
+    finally { setBusy(false) }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-md border border-crit/30 bg-crit-bg px-3 py-2 text-[12px] text-crit md:col-span-2" role="alert">
+      <span className="min-w-0 flex-1"><b>The CSV report could not be saved.</b> {o.error ?? ''}</span>
+      <Button size="sm" icon={RotateCcw} loading={busy} onClick={retry}>Retry</Button>
+    </div>
   )
 }
 

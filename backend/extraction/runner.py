@@ -6,6 +6,8 @@ prevention, background execution, cancel.
     instead of extracting again (unless the caller asks for a new run).
   * Every job writes to its own new folder, so results are never overwritten.
   * Jobs that were queued/running when the server stopped are marked "interrupted" at start-up.
+  * S3 output: every finished detection run of a job created with s3_output (the default) is handed to
+    `on_run_done` (backend/extraction/s3_output.py), which uploads its CSV to the cart's output_data folder.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from backend.core import s3
 from backend.core.config import STORAGE
 from backend.core.settings import Settings
 from backend.database.db import DB, now_iso
@@ -159,9 +162,26 @@ def clean_metadata(store_id: str | None, camera_id: str | None, recording_start_
     return out
 
 
+def clean_s3_destination(enabled: bool, bucket: str | None, cart: str | None, day: str | None) -> dict:
+    """Extraction columns of the job's S3 output. A missing cart is resolved when the CSV is uploaded
+    (store_id) - never guessed here. `day` (the input day folder) is only recorded: the output always goes
+    to the processing day's folder (s3_output.py)."""
+    if not enabled:
+        return {"s3_output": 0}
+    try:
+        cart = s3.cart_name(cart) if cart and cart.strip() else None
+        day = f"{s3.parse_day(day):%d-%m-%Y}" if day and day.strip() else None
+    except ValueError as e:
+        raise ExtractionRejected(str(e))
+    return {"s3_output": 1, "s3_bucket": (bucket or "").strip() or s3.bucket_name(), "s3_cart": cart,
+            "s3_day": day}
+
+
 class ExtractionRunner:
     def __init__(self, db: DB, settings: Settings, models=None):
         self.db, self.settings, self.models = db, settings, models
+        # S3 output stage (S3OutputRunner): prepare(run_id) before a run is marked done, submit(run_id) after
+        self.on_run_done = None
         self.q: queue.Queue = queue.Queue()
         self._cancel: set[str] = set()
         self._auto_detect: dict[str, float | None] = {}   # extraction id -> threshold (None = settings default)
@@ -175,12 +195,17 @@ class ExtractionRunner:
                run_detection: bool = False, threshold: float | None = None, *, strategy: str | None = "interval",
                sample_count: int | None = None, seed: int | None = None, store_id: str | None = None,
                camera_id: str | None = None, recording_start_time: str | None = None,
-               source: str = "upload") -> tuple[dict, bool]:
+               source: str = "upload", s3_output: bool = True, s3_bucket: str | None = None,
+               s3_cart: str | None = None, s3_day: str | None = None) -> tuple[dict, bool]:
         """Returns (job, reused). Raises ExtractionRejected or DuplicateJob. With `run_detection` the
         uniform model is run on the frames as soon as the extraction finishes.
 
         An identical finished job (same video, strategy, settings and metadata) is reused unless
-        `new_run`. A random job is identical only when the same seed was given explicitly."""
+        `new_run`. A random job is identical only when the same seed was given explicitly.
+
+        With `s3_output` (default) the CSV of every finished detection run is uploaded to
+        s3://<bucket>/<MM-YYYY>/<DD-MM-YYYY>/card_<N>/output_data/ (the processing day) and verified; the admin uploads pass False
+        because they upload their own CSV."""
         cfg = self.settings.get()
         if strategy is None:                 # API caller gave no strategy: interval if an interval was given
             strategy = "interval" if interval_seconds is not None else cfg["extraction_default_strategy"]
@@ -189,6 +214,7 @@ class ExtractionRunner:
         if strategy in RANDOM_STRATEGIES and sample_count is None:
             sample_count = int(cfg["extraction_default_sample_count"])
         meta = clean_metadata(store_id, camera_id, recording_start_time)
+        dest = clean_s3_destination(s3_output, s3_bucket, s3_cart, s3_day)
         if include_initial is None:          # the initial frame is extra: off by default for the random strategies
             include_initial = strategy == "interval"
         explicit_seed = seed is not None
@@ -207,6 +233,7 @@ class ExtractionRunner:
                 if j["state"] in ("queued", "running"):
                     raise DuplicateJob(j)
                 same = ((j.get("sampling_strategy") or "interval") == strategy
+                        and all((j.get(k) or None) == (v or None) for k, v in dest.items())
                         and bool(j["include_initial"]) == include_initial and j["image_format"] == fmt
                         and all((j.get(k) or None) == v for k, v in meta.items()))
                 if strategy == "interval":
@@ -223,7 +250,7 @@ class ExtractionRunner:
                    "include_initial": int(include_initial), "image_format": fmt, "planned": len(samples),
                    "output_dir": rel(out), "plan": summary, "failures": [], "sampling_strategy": strategy,
                    "sample_count": sample_count if strategy in RANDOM_STRATEGIES else None,
-                   "random_seed": seed if strategy in RANDOM_STRATEGIES else None, "source": source, **meta}
+                   "random_seed": seed if strategy in RANDOM_STRATEGIES else None, "source": source, **meta, **dest}
             if len(samples) <= MAX_LISTED_SAMPLES:       # the selected timestamps, shown with their status
                 summary["samples"] = [{"image_id": image_id(jid, x), "sample_type": x.sample_type,
                                        "target_seconds": x.target_seconds, "target_hhmmss": hhmmss(x.target_seconds),
@@ -335,7 +362,15 @@ class ExtractionRunner:
                 master_csv.append(self.db.extraction(run["extraction_id"]), run)
             except Exception:  # noqa: BLE001
                 log.exception("could not append %s to the master CSV", rid)
+        hook = self.on_run_done if fields["state"] == "done" else None
+        if hook:
+            try:                     # the upload record exists before "done", so nobody sees a done run
+                hook.prepare(rid)    # whose S3 output has not been registered yet
+            except Exception:  # noqa: BLE001 - resumed at the next start-up (db.s3_outputs_to_resume)
+                log.exception("could not register the S3 output of %s", rid)
         self.db.update_detection_run(rid, **fields)
+        if hook:
+            hook.submit(rid)
         log.info("detection %s %s: %d images, %d ok, %d failed, %d detections", rid, fields["state"],
                  st["processed"], st["succeeded"], st["failed"], st["detections"])
 

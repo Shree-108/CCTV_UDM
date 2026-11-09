@@ -1,7 +1,10 @@
 """S3 cart batches (POST /api/s3/process) against an in-memory S3 stand-in: which keys are read, what
 is written to output_data, and that missing credentials / failed analyses are reported, never hidden."""
+import base64
+import csv
+import hashlib
 import io
-from datetime import datetime, time as clock
+from datetime import date, datetime, time as clock
 import time
 
 import openpyxl
@@ -16,13 +19,29 @@ from tests.test_frame_detection import real_model  # noqa: F401  (fixture re-use
 
 HEADER = ["cart_id", "Store Name ", "Date ", "Time Stamp ", "img name ", "confidence score ", "remark (Example)"]
 BUCKET = "yk-cctv-prediction"
-DAY = "10-2026/30-10-2026"
+DAY = "10-2026/30-10-2026"                                    # the input day folder
+
+
+def out_prefix(card: int) -> str:
+    """Output folder of the processing day (today, Asia/Kolkata) - never the input day."""
+    t = s3.today()
+    return f"{t:%m-%Y}/{t:%d-%m-%Y}/card_{card}/output_data/"
+
+
+def local_sheet(batch_id: str, cart: str):
+    """The cart batch's xlsx, which stays on local disk (only the CSV goes to S3)."""
+    from backend.extraction.s3_batch import BATCHES
+    ws = openpyxl.load_workbook(BATCHES / batch_id / cart / f"{cart}.xlsx").active
+    return [[c.value for c in r] for r in ws.iter_rows()]
 
 
 class FakeS3:
     def __init__(self, objects: dict[str, bytes], credentials: bool = True, bucket_exists: bool = True):
         self.objects, self.credentials, self.bucket_exists = dict(objects), credentials, bucket_exists
         self.content_types: dict[str, str] = {}
+        self.checksums: dict[str, str] = {}
+        self.puts: list[str] = []
+        self.fail_put = lambda key: False
 
     def head_bucket(self, Bucket):
         if not self.credentials:
@@ -48,8 +67,44 @@ class FakeS3:
             self.objects[key] = f.read()
         self.content_types[key] = (ExtraArgs or {}).get("ContentType")
 
+    def list_objects_v2(self, Bucket, Prefix="", MaxKeys=1000, **kw):
+        keys = sorted(k for k in self.objects if k.startswith(Prefix))[:MaxKeys]
+        return {"KeyCount": len(keys), "Contents": [{"Key": k, "Size": len(self.objects[k])} for k in keys]}
+
     def keys(self, prefix):
         return sorted(k for k in self.objects if k.startswith(prefix))
+
+    # conditional PUT with a SHA-256 check and HEAD with checksums, as S3 does them (verified CSV uploads)
+    def put_object(self, Bucket, Key, Body, ContentType, IfNoneMatch=None, IfMatch=None, ChecksumSHA256=None,
+                   Metadata=None):
+        if self.fail_put(Key):
+            raise ClientError({"Error": {"Code": "InternalError", "Message": "S3 is down"}}, "PutObject")
+        if IfNoneMatch == "*" and Key in self.objects:
+            raise ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
+        if IfMatch is not None and (Key not in self.objects or self.etag(Key) != IfMatch):
+            raise ClientError({"Error": {"Code": "PreconditionFailed" if Key in self.objects else "NoSuchKey"}},
+                              "PutObject")
+        data = Body if isinstance(Body, bytes) else Body.read()
+        if ChecksumSHA256 != base64.b64encode(hashlib.sha256(data).digest()).decode():
+            raise ClientError({"Error": {"Code": "BadDigest"}}, "PutObject")
+        self.objects[Key], self.checksums[Key], self.content_types[Key] = data, ChecksumSHA256, ContentType
+        self.puts.append(Key)
+
+    def etag(self, key):
+        return '"' + hashlib.md5(self.objects[key]).hexdigest() + '"'
+
+    def get_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+        return {"Body": io.BytesIO(self.objects[Key]), "ETag": self.etag(Key)}
+
+    def head_object(self, Bucket, Key, ChecksumMode=None):
+        if Key not in self.objects:
+            raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        h = {"ContentLength": len(self.objects[Key])}
+        if Key in self.checksums:
+            h["ChecksumSHA256"] = self.checksums[Key]
+        return h
 
 
 @pytest.fixture()
@@ -74,7 +129,8 @@ def test_paths_and_validation(client, fake_s3):
     from datetime import date
     d = s3.parse_day("30-10-2026")
     assert s3.input_prefix(d, "cart_78") == "10-2026/30-10-2026/cart_78/input_data/"
-    assert s3.output_prefix(d, "cart_78") == "10-2026/30-10-2026/cart_78/output_data/"
+    assert s3.output_prefix(d, "cart_78") == "10-2026/30-10-2026/card_78/output_data/"
+    assert s3.daily_csv_key(date(2026, 11, 8), "cart_50") == "11-2026/08-11-2026/card_50/output_data/card50_2026_11_08.csv"
     assert d == date(2026, 10, 30) and s3.cart_name("78") == "cart_78" and s3.cart_name("cart_46") == "cart_46"
     fake_s3(FakeS3({}))
     assert client.post("/api/s3/process", json={"date": "2026-10-30", "carts": ["cart_78"]}).status_code == 422
@@ -136,15 +192,24 @@ def test_cart_batch_end_to_end(client, real_model, fake_s3, monkeypatch):  # noq
     b = wait_batch(client, r.json()["id"])
     assert b["state"] == "done" and [c["cart"] for c in b["carts"]] == ["cart_50", "cart_78"]
     c50, c78 = b["carts"]
-    out = f"{DAY}/cart_50/output_data/"
-    assert c50["state"] == "done" and c50["report"] == f"s3://{BUCKET}/{out}cart_50.xlsx"
+    out = out_prefix(50)
+    daily = s3.daily_csv_key(s3.today(), "cart_50")
+    assert c50["state"] == "done" and c50["report"] == f"s3://{BUCKET}/{daily}"
     assert c50["summary"] == {"files": 3, "analysed": 2, "failed": 0, "skipped": 1, "screenshots": 8}
     assert c78["state"] == "failed" and "No files found" in c78["error"]
-    # ONE file per cart, nothing for carts that were not asked for
-    assert fake.keys(out) == [f"{out}cart_50.xlsx"]
-    assert not fake.keys(f"{DAY}/cart_46/output_data/") and not fake.keys(f"{DAY}/cart_78/output_data/")
+    # today's CSV (both videos' rows appended) + a detection image per CSV row; the xlsx stays local
+    videos = [f for f in c50["files"] if f["state"] == "done"]
+    assert len(videos) == 2 and all(f["s3_csv"] == f"s3://{BUCKET}/{daily}" for f in videos)
+    stem = daily.rsplit(".", 1)[0]
+    assert fake.keys(out) == sorted([daily] + [f"{stem}_pic{i}.jpg" for i in range(1, 9)])
+    assert not fake.keys("cart50")
+    assert not fake.keys(f"{DAY}/cart_50/output_data/")          # nothing in the input day's folder
+    header_csv, *csv_rows = list(csv.reader(io.StringIO(fake.objects[daily].decode())))
+    assert header_csv == HEADER and len(csv_rows) == 8 and all(r[5] == "50" for r in csv_rows)
+    assert [r[4] for r in csv_rows] == [f"pic{i}" for i in range(1, 9)]
+    assert not fake.keys(out_prefix(46)) and not fake.keys(out_prefix(78))
 
-    header, *rows = sheet(fake, f"{out}cart_50.xlsx")
+    header, *rows = local_sheet(b["id"], "cart_50")
     assert header == HEADER and len(rows) == 8
     timed_rows, untimed = rows[:4], rows[4:]                  # known recording times first, in time order
     for i, (cid, store, day, t, img, score, remark) in enumerate(rows, 1):
@@ -165,24 +230,6 @@ def test_failed_analysis_is_not_non_uniform(client, fake_s3):
     b = wait_batch(client, client.post("/api/s3/process", json={"date": "30-10-2026", "carts": ["cart_9"]}).json()["id"])
     (c,) = b["carts"]
     assert c["files"][0]["state"] == "failed" and "weights not found" in c["files"][0]["error"]
-    assert fake.keys(f"{DAY}/cart_9/output_data/") == [f"{DAY}/cart_9/output_data/cart_9.xlsx"]
-    header, *rows = sheet(fake, f"{DAY}/cart_9/output_data/cart_9.xlsx")
+    assert not fake.keys(out_prefix(9)) and c["report"] is None        # nothing uploaded: no CSV for a failed run
+    header, *rows = local_sheet(b["id"], "cart_9")
     assert rows and all(r[1] is None and r[5] is None and "could not be determined" in r[6] for r in rows)
-
-
-def test_test_runs_upload_next_to_output_data_never_over_it(client, real_model, fake_s3, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(detect, "classify_frame", lambda *a: [Person((100, 80, 220, 460), "uniform", 0.9)])
-    prod = f"{DAY}/cart_50/output_data/cart_50.xlsx"
-    fake = fake_s3(FakeS3({f"{DAY}/cart_50/input_data/video1.mp4": (MEDIA / "dvr_grid.mp4").read_bytes(),
-                           prod: b"the existing report"}))
-    for bad in ("output_data", "input_data", "../output_data", "a/b", ""):
-        r = client.post("/api/s3/process", json={"date": "30-10-2026", "carts": ["50"], "output_folder": bad})
-        assert r.status_code == 422, bad
-    r = client.post("/api/s3/process", json={"date": "30-10-2026", "carts": ["50"], "output_folder": "output_data_test"})
-    assert r.status_code == 202 and r.json()["output_folder"] == "output_data_test"
-    b = wait_batch(client, r.json()["id"])
-    (c,) = b["carts"]
-    assert c["state"] == "done" and c["report"] == f"s3://{BUCKET}/{DAY}/cart_50/output_data_test/cart_50.xlsx"
-    assert fake.objects[prod] == b"the existing report"                       # production report untouched
-    assert fake.keys(f"{DAY}/cart_50/output_data_test/") == [f"{DAY}/cart_50/output_data_test/cart_50.xlsx"]
-    assert len(sheet(fake, f"{DAY}/cart_50/output_data_test/cart_50.xlsx")) == 5   # header + 4 screenshots

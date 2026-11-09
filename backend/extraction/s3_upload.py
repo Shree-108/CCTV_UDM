@@ -1,15 +1,22 @@
 """Admin video uploads (POST /api/s3/uploads): one video for one card goes to S3, through the existing
 quick sampled analysis, and its report goes back to S3 as a CSV.
 
-    queued -> uploading -> processing -> generating_report -> uploading_output -> completed   (or failed)
+    queued -> uploading -> processing -> generating_report -> uploading_output -> uploading_images -> completed
+                                                                                                    (or failed)
 
   uploading          the received video is written to <MM-YYYY>/<DD-MM-YYYY>/cart_<N>/input_data/<name>
                      with a conditional PUT (never over an existing object) and verified (size + SHA-256)
   processing         S3BatchRunner.analyse_file: download from S3, extraction + uniform detection
                      (the same path as the cart batches, so the job also reaches the master CSV)
-  generating_report  cart_report rows (the cart_<N>.xlsx columns) written as a CSV
-  uploading_output   .../cart_<N>/output_data/cart_<N>_<video>_<job id>.csv, conditional PUT + verified
-  completed          only after the CSV in S3 matches the local one
+  generating_report  cart_report rows (the cart_<N>.xlsx columns) written as this video's own CSV (local; the
+                     admin portal shows / downloads it)
+  uploading_output   the rows are appended to the processing day's CSV (today in Asia/Kolkata, never the
+                     video's date) <MM-YYYY>/<DD-MM-YYYY>/card_<N>/output_data/card<N>_YYYY_MM_DD.csv - the day's first
+                     job creates it (s3.append_csv: earlier rows kept, conditional write, numbering continues
+                     after the highest pic<K>) - and verified
+  uploading_images   each row's detection image next to the CSV, card<N>_YYYY_MM_DD_pic<K>.jpg (never replaced;
+                     s3_output.upload_images)
+  completed          only after the CSV and the images in S3 are verified
 
 Duplicates and retries: the same video (SHA-256) for the same card is one job. Uploading it again returns
 that job; if it had failed, the new copy is used to retry it. A retry skips the stages already done:
@@ -19,7 +26,6 @@ the same video twice. A failed or unfinished analysis is never reported (no CSV 
 from __future__ import annotations
 
 import csv
-import hashlib
 import logging
 import queue
 import threading
@@ -33,12 +39,13 @@ from backend.database.db import DB, now_iso
 from backend.extraction import cart_report
 from backend.extraction.extractor import FRAME_UNREADABLE
 from backend.extraction.s3_batch import S3BatchRunner
+from backend.extraction.s3_output import append_rows, upload_images
 from backend.extraction.screenshots import DETECTION_FAILED, screenshot_results
 
 log = logging.getLogger(__name__)
 UPLOADS_DIR = STORAGE / "s3_uploads"
 INCOMING = UPLOADS_DIR / "incoming"
-ACTIVE = ("queued", "uploading", "processing", "generating_report", "uploading_output")
+ACTIVE = ("queued", "uploading", "processing", "generating_report", "uploading_output", "uploading_images")
 VIDEO_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
                ".mkv": "video/x-matroska", ".webm": "video/webm", ".mpg": "video/mpeg", ".mpeg": "video/mpeg",
                ".ts": "video/mp2t"}
@@ -46,14 +53,6 @@ VIDEO_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktim
 
 class UploadRejected(ValueError):
     """The request cannot be accepted; the message is shown to the admin as is."""
-
-
-def sha256_file(p: Path) -> str:
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        while chunk := f.read(2 ** 20):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def card_cart(card_id: int) -> tuple[str, str]:
@@ -115,7 +114,8 @@ class S3UploadRunner:
                 "store_name": store, "filename": filename, "s3_name": name, "size_bytes": size, "sha256": sha256,
                 "day": f"{day:%d-%m-%Y}", "day_source": day_source, "bucket": bucket,
                 "input_key": s3.input_prefix(day, cart) + name,
-                "output_key": s3.output_prefix(day, cart) + f"{cart}_{Path(name).stem}_{jid}.csv",
+                # the processing day's CSV (today, Asia/Kolkata - not the video's date) its rows are appended to
+                "output_key": s3.daily_csv_key(s3.today(), cart),
                 "state": "queued", "attempts": 1, "input_verified": 0, "local_path": str(path)})
         self.q.put(jid)
         return self.get(jid), "created"
@@ -218,16 +218,25 @@ class S3UploadRunner:
 
             stage = "generating_report"
             set_(state=stage)
-            rows = cart_report.rows(job["cart"], records)
-            out = cart_report.write_csv(UPLOADS_DIR / jid / job["output_key"].rsplit("/", 1)[-1], rows)
-            sha, size = sha256_file(out), out.stat().st_size
-            set_(report_path=str(out), report_sha256=sha, summary=summarise(records))
+            # this video's own report (what the admin portal shows and downloads)
+            out = cart_report.write_csv(UPLOADS_DIR / jid / f"{job['cart']}_{Path(job['s3_name']).stem}_{jid}.csv",
+                                        cart_report.rows(job["cart"], records))
+            set_(report_path=str(out), summary=summarise(records))
 
-            stage = "uploading_output"
+            first = job.get("csv_first_row")
+            if not first:                            # once the rows are verified in S3 they are never appended again
+                stage = "uploading_output"
+                set_(state=stage)
+                # appended to the day's CSV; report_sha256 = SHA-256 of that CSV in S3 once this job's rows are in it
+                first = append_rows(s3c, bucket, job["output_key"], job["cart"], records,
+                                    UPLOADS_DIR / jid / job["output_key"].rsplit("/", 1)[-1],
+                                    already=job.get("report_sha256"), on_prepared=lambda size, sha: set_(report_sha256=sha))
+                set_(csv_first_row=first)
+
+            stage = "uploading_images"
             set_(state=stage)
-            s3.put_new(s3c, bucket, job["output_key"], out, sha, "text/csv")
-            s3.verify(s3c, bucket, job["output_key"], size, sha)
-            set_(state="completed", finished_at=now_iso())
+            n = upload_images(s3c, bucket, job["output_key"], cart_report.rows(job["cart"], records, first), jid)
+            set_(state="completed", images_uploaded=n, finished_at=now_iso())
         except Exception as e:  # noqa: BLE001 - shown to the admin with the stage it failed in
             log.warning("S3 upload %s failed while %s: %s", jid, stage, e)
             set_(state="failed", failed_stage=stage, error=str(e) or e.__class__.__name__, finished_at=now_iso())
@@ -244,7 +253,7 @@ class S3UploadRunner:
              "recording_start_time": None, "extraction_id": None, "detection_run_id": None, "screenshots": 0}
         self.live[job["id"]] = f
         try:
-            records = self.batches.analyse_file(s3c, job["bucket"], None, job["cart"], f)
+            records = self.batches.analyse_file(s3c, job["bucket"], None, job["cart"], f, s3_output=False)
         finally:
             self.live.pop(job["id"], None)
             self.db.update_s3_upload(job["id"], media_id=f.get("media_id"), extraction_id=f.get("extraction_id"),

@@ -27,7 +27,16 @@ There is no JS test runner and no ESLint config; frontend behaviour is checked w
    are HEVC in MPEG-PS where seeking returns grey / wrong frames; corrupted or blank frames are rejected by
    `frame_quality.py` as `frame_unreadable`) → `detect.py`
    (`classify_frame` per screenshot: person detector + per-person classifier) → reports →
-   `business_csv.write` (per-job CSV) → `master_csv.append` → run marked `done`.
+   `business_csv.write` (per-job CSV) → `master_csv.append` → run marked `done` →
+   `s3_output.py` (`S3OutputRunner`, own worker thread): the run's rows (cart_report columns) are appended to
+   TODAY's CSV `<MM-YYYY>/<DD-MM-YYYY>/card_<N>/output_data/card<N>_YYYY_MM_DD.csv` (`s3.today()` = Asia/Kolkata date at
+   run time, never the video's date; `s3.append_csv`) and verified (size + SHA-256), then each row's detection image
+   goes next to it as `card<N>_YYYY_MM_DD_pic<K>.jpg` (`upload_images`, `s3.put_new`, never replaced). Numbering
+   continues after the highest pic<K> in the CSV or the folder. Never use / create a `cart50/` root (user, 2026-11-08).
+   The job's `status` is `completed` only after both; a failed upload is `failed` with a Retry
+   (`POST /api/detection-runs/{id}/s3-output/retry`, optionally with the missing Card ID). `csv_first_row` marks the
+   rows as in S3, so a retry never appends them twice. Cart = the job's `card_id` (or a store ID that is a
+   configured cart) - never guessed. Jobs created with `s3_output=False` (the admin uploads) and older jobs are not uploaded.
    Frontend: `ProcessPanel` in `frontend/features/results/ResultsDashboard.tsx`, reused by
    `frontend/features/analysis/VideoAnalysisPage.tsx`.
 2. **Full-video analysis** — `POST /api/analyses` → `backend/analysis/pipeline.py`: every analysed frame
@@ -36,10 +45,11 @@ There is no JS test runner and no ESLint config; frontend behaviour is checked w
    business CSVs.
 
 3. **S3 paths** (both reuse pipeline 1 via `S3BatchRunner.analyse_file`):
-   `POST /api/s3/process` (cart batch: every video in a day's `input_data` → one `<cart>.xlsx`, no login) and
+   `POST /api/s3/process` (cart batch: every video in a day's `input_data` → rows in today's CSV; `<cart>.xlsx` local only, no login) and
    the admin **S3 Upload** page `/s3-upload` → `POST /api/s3/uploads` (`backend/extraction/s3_upload.py`, admin
    login `backend/core/auth.py`): one video → conditional PUT to `input_data` → analysis →
-   `output_data/<cart>_<video>_<job>.csv`; completed only after the CSV is verified in S3; same video + card = one job.
+   rows appended to today's `card<N>_YYYY_MM_DD.csv` + detection images; completed only after both are verified in S3;
+   same video + card = one job. Input videos stay in `<MM-YYYY>/<DD-MM-YYYY>/<cart>/input_data/`.
 
 ## Key modules
 
@@ -67,7 +77,14 @@ There is no JS test runner and no ESLint config; frontend behaviour is checked w
   (v0.2.0); its known weakness is false "uniform" on light-coloured shirts. See `training/DATA_COLLECTION_PLAN.md`.
 - **Training and inference crops must match** (`upper_body_box`); change both together or neither.
 - **Privacy:** `storage/`, `data/` and `runs/` contain images of real people and are git-ignored. Never commit them.
-- **No fake integrations:** S3 is not implemented and live CCTV is not connected; status badges must say so.
+- **No fake integrations:** S3 holds the daily CSV reports, the detection images next to them (asked for by the user)
+  and the admin uploads' input videos - the batch xlsx stays local; live CCTV is not connected. Status badges must say so.
+- **S3 output never loses rows:** input videos and images go up with `s3.put_new` (If-None-Match). The daily CSV
+  `card<N>_YYYY_MM_DD.csv` is append-only via `s3.append_csv`: existing bytes kept exactly, header must match,
+  conditional write (If-Match ETag / If-None-Match), re-merged on conflict; verified with `s3.verify`.
+  Credentials / bucket / region come only from `.env` (`s3.client()` passes them explicitly; no ~/.aws, no role).
+  Tests never reach AWS: `conftest.py` blanks the credentials and the shared credentials file; S3 tests patch
+  `s3_batches.client_factory` with `FakeS3` (`tests/test_s3_batch.py`).
 
 ## Tests
 

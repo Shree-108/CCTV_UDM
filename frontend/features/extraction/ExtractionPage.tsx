@@ -9,7 +9,7 @@ import type { Extraction, ExtractionPlan, ExtractionSample, SamplingStrategy } f
 import { invalidate, useQuery } from '../../hooks/useQuery'
 import { cx, dateTime, duration } from '../../lib/format'
 import { useApp } from '../../stores/app'
-import { Badge, Button, Field, Input, PageHeader, Panel, Segmented, Toggle } from '../../components/ui/primitives'
+import { Badge, Button, Field, Input, PageHeader, Panel, Segmented, Select, Toggle } from '../../components/ui/primitives'
 import { MetricCard } from '../../components/ui/kpi'
 import { EmptyState, ErrorState } from '../../components/ui/states'
 import { DropZone, MediaInfo } from '../analysis/common'
@@ -99,9 +99,23 @@ function RecentJobs({ jobs }: { jobs: Extraction[] }) {
 }
 
 // ---------------------------------------------------------------- 2. choose interval
-/** Reused by the Results dashboard: `onStarted` / `onReset` keep it on the same page. */
-export function Configure({ mediaId, onStarted, onReset, startLabel = 'EXTRACT FRAMES' }: {
-  mediaId: string; onStarted?: (jobId: string) => void; onReset?: () => void; startLabel?: string
+/** Recording start encoded in an NVR file name (20261104_20261104215126_..._192126.mp4) as a datetime-local
+ *  value, or '' - the same rule as the backend (cart_report.recording_start). */
+function nvrStart(name: string): string {
+  const m = /^\d{8}_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})_\d{14}_/.exec(name)
+  return m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}` : ''
+}
+
+/** DD-MM-YYYY of a datetime-local value (the S3 day folder). */
+function dayFolder(v: string): string {
+  return v ? `${v.slice(8, 10)}-${v.slice(5, 7)}-${v.slice(0, 4)}` : ''
+}
+
+/** Reused by the Results dashboard: `onStarted` / `onReset` keep it on the same page. `simple` = the Video Analysis
+ *  form: random screenshots across the video + the uniform model, only the number of screenshots and the metadata
+ *  to fill in (the strategy / seed / initial-frame / detection options stay on the Frame Extraction page). */
+export function Configure({ mediaId, onStarted, onReset, startLabel = 'EXTRACT FRAMES', simple = false }: {
+  mediaId: string; onStarted?: (jobId: string) => void; onReset?: () => void; startLabel?: string; simple?: boolean
 }) {
   const router = useRouter()
   const { toast } = useApp()
@@ -111,18 +125,30 @@ export function Configure({ mediaId, onStarted, onReset, startLabel = 'EXTRACT F
   const [value, setValue] = useState<string | null>(null)
   const [unit, setUnit] = useState<'s' | 'min'>('s')
   const [initialV, setInitial] = useState<boolean | null>(null)
-  const [detectAfter, setDetectAfter] = useState(true)
+  const [detectAfterV, setDetectAfter] = useState(true)
+  const detectAfter = simple || detectAfterV
   const [starting, setStarting] = useState(false)
   const [strategyV, setStrategy] = useState<SamplingStrategy | null>(null)
   const [countV, setCount] = useState<string | null>(null)
   // defaults come from Settings: random across the video, 4 screenshots, no extra initial frame
-  const strategy: SamplingStrategy = strategyV ?? settings.data?.settings.extraction_default_strategy ?? 'random_segments'
+  const strategy: SamplingStrategy = simple ? 'random_segments'
+    : strategyV ?? settings.data?.settings.extraction_default_strategy ?? 'random_segments'
   const count = countV ?? String(settings.data?.settings.extraction_default_sample_count ?? 4)
-  const initial = initialV ?? strategy === 'interval'
+  const initial = simple ? false : initialV ?? strategy === 'interval'
   const [seed, setSeed] = useState('')
   const [storeId, setStoreId] = useState('')
   const [cameraId, setCameraId] = useState('')
-  const [recStart, setRecStart] = useState('')          // datetime-local value, '' = unknown
+  const [recStartV, setRecStart] = useState<string | null>(null)   // datetime-local value, '' = unknown
+  const [cardV, setCard] = useState<string | null>(null)
+  const cards = useQuery('s3-output-cards', Api.s3OutputCards)
+  // NVR file names carry the recording start: pre-filled (editable), never invented for other names
+  const recStart = recStartV ?? nvrStart(media.data?.filename ?? '')
+  const cardList = cards.data?.cards ?? []
+  const card = cardV ?? (cardList.length === 1 ? String(cardList[0].card_id) : '')
+  const cart = cardList.find((c) => String(c.card_id) === card)
+  const [folderDate, setFolderDate] = useState('')       // yyyy-mm-dd: S3 day folder when the recording start is unknown
+  const s3Day = dayFolder(recStart) || dayFolder(folderDate)
+  const s3Ready = !detectAfter || (!!cart && !!s3Day)
   const shown = value ?? String(unit === 'min' ? def / 60 : def)
   const seconds = Number(shown) * (unit === 'min' ? 60 : 1)
   const nCount = Number(count)
@@ -142,6 +168,7 @@ export function Configure({ mediaId, onStarted, onReset, startLabel = 'EXTRACT F
     try {
       const j = await Api.startExtraction({ media_id: mediaId, ...sampling, include_initial: initial, new_run: newRun,
         run_detection: detectAfter, store_id: storeId.trim() || undefined, camera_id: cameraId.trim() || undefined,
+        card_id: cart ? cart.card_id : undefined, s3_day: !recStart && folderDate ? dayFolder(folderDate) : undefined,
         recording_start_time: recStart ? (recStart.length === 16 ? `${recStart}:00` : recStart) : undefined })
       invalidate('extractions')
       if (j.reused) toast({ tone: 'info', title: 'Already extracted', body: 'An identical extraction of this video exists — showing it. Use "Extract again" for a new run.' })
@@ -159,6 +186,17 @@ export function Configure({ mediaId, onStarted, onReset, startLabel = 'EXTRACT F
     }
   }
 
+  // why the start button is disabled - every unmet requirement, shown next to the button
+  const blockers: string[] = []
+  if (media.data && media.data.kind !== 'video') blockers.push('Upload a video file (this upload is an image).')
+  if (!valid) blockers.push(strategy === 'interval' ? 'Enter an interval between 1 second and 24 hours.' : 'Enter a whole number of screenshots (and a whole-number seed, or leave it empty).')
+  else if (plan.error) blockers.push(`The sampling plan could not be calculated: ${(plan.error as Error).message}`)
+  else if (!plan.data) blockers.push('Calculating the screenshots to extract…')
+  else if (!plan.data.allowed) blockers.push(plan.data.reason ?? 'This sampling plan is not allowed.')
+  if (detectAfter && !cart) blockers.push(cards.error ? 'The Card IDs could not be loaded (is the backend running?).'
+    : cardList.length ? 'Choose the Card ID.' : 'No Card ID is configured in config/carts.yaml.')
+  if (detectAfter && !s3Day) blockers.push('Enter the Recording start, or the Recording date — the file name does not contain the recording time, and the report is filed by day.')
+
   const reset = () => (onReset ? onReset() : router.push('/extract'))
   if (media.error) return <Panel title="Video"><ErrorState error={media.error} title="Uploaded video not found" action={<Button size="sm" onClick={reset}>Upload again</Button>} /></Panel>
   if (!media.data) return <Panel title="Video"><div className="py-10 text-center text-[13px] text-fg-3">Loading…</div></Panel>
@@ -171,12 +209,19 @@ export function Configure({ mediaId, onStarted, onReset, startLabel = 'EXTRACT F
         <img src={url(m.preview_url)} alt="First frame preview" className="block max-h-[360px] w-full rounded-md border border-line bg-video object-contain" />
         {m.kind !== 'video' && <p className="mt-2 text-[12px] text-crit">This upload is an image. Frame extraction needs a video.</p>}
       </Panel>
-      <Panel title="Sampling" icon={ListChecks}>
+      <Panel title={simple ? 'Analysis' : 'Sampling'} icon={ListChecks}>
         <div className="flex flex-col gap-3">
-          <Segmented label="Strategy" value={strategy} onChange={setStrategy}
+          {!simple && <Segmented label="Strategy" value={strategy} onChange={setStrategy}
             options={[{ value: 'random_segments', label: 'Random across video' }, { value: 'interval', label: 'Fixed interval' },
-              { value: 'random', label: 'Random frames' }]} />
-          {strategy === 'interval' ? (
+              { value: 'random', label: 'Random frames' }]} />}
+          {simple ? (
+            <div className="flex flex-wrap items-end gap-2">
+              <Field label="Number of screenshots" htmlFor="xcount">
+                <Input id="xcount" type="number" min={1} step={1} value={count} onChange={(e) => setCount(e.target.value)} className="w-28" />
+              </Field>
+              <p className="text-[11px] text-fg-3">The video is split into equal parts; one random screenshot from each part is checked by the uniform model.</p>
+            </div>
+          ) : strategy === 'interval' ? (
             <div className="flex flex-wrap items-end gap-2">
               <Field label="Every" htmlFor="xint">
                 <Input id="xint" type="number" min={unit === 'min' ? 0.0167 : 1} step="any" value={shown} onChange={(e) => setValue(e.target.value)} className="w-28" />
@@ -211,31 +256,65 @@ export function Configure({ mediaId, onStarted, onReset, startLabel = 'EXTRACT F
             </Field>
           </div>
           <p className="-mt-1 text-[11px] text-fg-3">Leave these empty when unknown — nothing is guessed. Without a recording start time,
-            results show only the position in the video (e.g. 00:05:00), never a clock time.</p>
-          <Toggle checked={detectAfter} onChange={setDetectAfter} label="Run uniform detection on the frames afterwards"
-            description="Uses the existing trained model; annotated copies and detection_results.csv are saved separately." />
-          <Toggle checked={initial} onChange={setInitial} label="Also save the initial frame (00:00:00)"
-            description="Recorded separately as sample type 'initial' — it is not counted as a scheduled sample." />
-          <div className={cx('rounded-md border px-3 py-2 text-[12px]', plan.data && !plan.data.allowed ? 'border-warn/40 bg-warn-bg text-warn' : 'border-line bg-panel-2 text-fg-2')}>
-            {!valid ? (strategy === 'interval' ? 'Enter an interval between 1 second and 24 hours.' : 'Enter a whole number of random frames (and a whole-number seed, or leave it empty).')
-              : plan.error ? (plan.error as Error).message
-                : !plan.data ? 'Calculating…' : (
-                  <>
-                    <div className="mb-1 flex items-center gap-1.5 font-semibold text-fg"><Info className="size-3.5" aria-hidden />
-                      {plan.data.total} image{plan.data.total === 1 ? '' : 's'} will be extracted
-                      <span className="font-normal text-fg-3">({plan.data.initial} initial + {plan.data.scheduled} {plan.data.strategy === 'interval' ? 'scheduled' : 'random'})</span></div>
-                    <p>{plan.data.explanation}</p>
-                    <p className="mt-1 text-fg-3">{plan.data.coverage_note}</p>
-                    {plan.data.reason && <p className="mt-1 font-medium">{plan.data.reason}</p>}
-                  </>
-                )}
-          </div>
+            results show only the position in the video (e.g. 00:05:00), never a clock time.
+            {nvrStart(m.filename) && recStartV === null ? ' The recording start was read from the NVR file name.' : ''}</p>
+          {detectAfter && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {cardList.length === 1 && cart ? (
+                <Field label="Card ID">
+                  <span className="flex h-8 items-center text-[13px] text-fg">{cart.card_id} · {cart.store_name || cart.cart}</span>
+                </Field>
+              ) : (
+                <Field label="Card ID" htmlFor="xcard">
+                  <Select id="xcard" value={card} onChange={(e) => setCard(e.target.value)} disabled={!cardList.length}
+                    aria-invalid={!cart} className={cx(!cart && 'border-warn')}>
+                    <option value="">{cards.error ? 'could not load the cards' : cardList.length ? 'Choose the card…' : 'no card in config/carts.yaml'}</option>
+                    {cardList.map((c) => <option key={c.card_id} value={c.card_id}>{c.card_id} · {c.store_name || c.cart}</option>)}
+                  </Select>
+                </Field>
+              )}
+              {!recStart && (
+                <Field label="Recording date" htmlFor="xday">
+                  <Input id="xday" type="date" value={folderDate} onChange={(e) => setFolderDate(e.target.value)}
+                    aria-invalid={!folderDate} aria-describedby="xday-help" className={cx(!folderDate && 'border-warn')} />
+                  {!folderDate && <span id="xday-help" className="mt-0.5 block text-[11px] font-medium text-warn">Required: the date the video was recorded (or enter the Recording start above).</span>}
+                </Field>
+              )}
+            </div>
+          )}
+          {!simple && <>
+            <Toggle checked={detectAfter} onChange={setDetectAfter} label="Run uniform detection on the frames afterwards"
+              description="Uses the existing trained model; annotated copies and detection_results.csv are saved separately." />
+            <Toggle checked={initial} onChange={setInitial} label="Also save the initial frame (00:00:00)"
+              description="Recorded separately as sample type 'initial' — it is not counted as a scheduled sample." />
+            <div className={cx('rounded-md border px-3 py-2 text-[12px]', plan.data && !plan.data.allowed ? 'border-warn/40 bg-warn-bg text-warn' : 'border-line bg-panel-2 text-fg-2')}>
+              {!valid ? (strategy === 'interval' ? 'Enter an interval between 1 second and 24 hours.' : 'Enter a whole number of random frames (and a whole-number seed, or leave it empty).')
+                : plan.error ? (plan.error as Error).message
+                  : !plan.data ? 'Calculating…' : (
+                    <>
+                      <div className="mb-1 flex items-center gap-1.5 font-semibold text-fg"><Info className="size-3.5" aria-hidden />
+                        {plan.data.total} image{plan.data.total === 1 ? '' : 's'} will be extracted
+                        <span className="font-normal text-fg-3">({plan.data.initial} initial + {plan.data.scheduled} {plan.data.strategy === 'interval' ? 'scheduled' : 'random'})</span></div>
+                      <p>{plan.data.explanation}</p>
+                      <p className="mt-1 text-fg-3">{plan.data.coverage_note}</p>
+                      {plan.data.reason && <p className="mt-1 font-medium">{plan.data.reason}</p>}
+                    </>
+                  )}
+            </div>
+          </>}
           <Button variant="primary" icon={Play} className="h-10 text-[14px]" loading={starting}
-            disabled={!plan.data?.allowed || m.kind !== 'video'} onClick={() => start(false)}>
+            disabled={!plan.data?.allowed || m.kind !== 'video' || !s3Ready} onClick={() => start(false)}
+            aria-describedby={blockers.length ? 'xstart-blockers' : undefined}>
             {startLabel}
           </Button>
-          <p className="text-[11px] text-fg-3">Frames are saved as {(settings.data?.settings.extraction_image_format ?? 'png').toUpperCase()} in
-            <span className="font-mono"> storage/extractions/&lt;job&gt;/frames/</span> with an image_manifest.csv (successful frames) and failures.csv.</p>
+          {blockers.length > 0 && (
+            <div id="xstart-blockers" role="status" className="rounded-md border border-warn/40 bg-warn-bg px-3 py-2 text-[12px] text-warn">
+              <p className="font-semibold">{startLabel} is not available yet:</p>
+              <ul className="ml-4 list-disc">{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
+            </div>
+          )}
+          {!simple && <p className="text-[11px] text-fg-3">Frames are saved as {(settings.data?.settings.extraction_image_format ?? 'png').toUpperCase()} in
+            <span className="font-mono"> storage/extractions/&lt;job&gt;/frames/</span> with an image_manifest.csv (successful frames) and failures.csv.</p>}
         </div>
       </Panel>
     </div>

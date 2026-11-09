@@ -1,8 +1,12 @@
 """Cart batches from S3: every video in s3://<bucket>/<MM-YYYY>/<DD-MM-YYYY>/<cart>/input_data/ goes
 through the quick sampled analysis (the same ExtractionRunner path as the dashboard, so the jobs also
-reach the master CSV), and ONE file is uploaded per cart:
+reach the master CSV). Results go to the processing day's output folder (today in Asia/Kolkata, not the
+input day folder), each video's rows appended and verified (s3_output.py):
 
-    <cart>/output_data/<cart>.xlsx     one row per sampled screenshot of all the cart's videos (cart_report)
+    <MM-YYYY>/<DD-MM-YYYY>/card_<N>/output_data/card<N>_YYYY_MM_DD.csv          the day's CSV
+    <MM-YYYY>/<DD-MM-YYYY>/card_<N>/output_data/card<N>_YYYY_MM_DD_pic<K>.jpg   each row's detection image
+
+The cart's <cart>.xlsx (one row per sampled screenshot of all its videos) is written locally only.
 
 The recording time is read from CCTV file names like 20261029_20261029183009_20261029183120_183009.mp4.
 Only videos are analysed (screenshots are sampled from videos); other files are listed as skipped.
@@ -64,14 +68,13 @@ class S3BatchRunner:
         except s3.S3Unavailable as e:
             return {"ok": False, "bucket": bucket, "credentials": None, "message": str(e)}
 
-    def create(self, day: date, carts: list[str], bucket: str, threshold: float | None = None,
-               output_folder: str = s3.OUTPUT_FOLDER) -> dict:
+    def create(self, day: date, carts: list[str], bucket: str, threshold: float | None = None) -> dict:
         bid = f"s3-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
         batch = {"id": bid, "created_at": now_iso(), "finished_at": None, "state": "queued", "error": None,
-                 "bucket": bucket, "date": f"{day:%d-%m-%Y}", "threshold": threshold, "output_folder": output_folder,
+                 "bucket": bucket, "date": f"{day:%d-%m-%Y}", "threshold": threshold,
                  "carts": [{"cart": c, "state": "queued", "error": None, "report": None,
                             "input": f"s3://{bucket}/{s3.input_prefix(day, c)}",
-                            "output": f"s3://{bucket}/{s3.output_prefix(day, c, output_folder)}", "files": []}
+                            "output": f"s3://{bucket}/{s3.daily_csv_key(s3.today(), c)}", "files": []}
                            for c in carts]}
         with self._lock:
             self.batches[bid] = batch
@@ -148,7 +151,8 @@ class S3BatchRunner:
                 self._set(f, state="skipped", error="Not a video file; screenshots are sampled from videos only")
                 continue
             try:
-                records += self.analyse_file(s3c, batch["bucket"], batch["threshold"], cart["cart"], f)
+                records += self.analyse_file(s3c, batch["bucket"], batch["threshold"], cart["cart"], f,
+                                             day=day)
             except Exception as e:  # noqa: BLE001 - one bad file must not stop the cart
                 log.exception("S3 batch %s: %s failed", batch["id"], key)
                 self._set(f, state="failed", error=str(e))
@@ -168,15 +172,18 @@ class S3BatchRunner:
             w = csv.writer(fh)
             w.writerow(["img name", "source_video", "image_filename", "original_image_path"])
             w.writerows([r["img"], r["source_video"], r["image_filename"], r["original_image_path"]] for r in rows)
-        key = s3.output_prefix(day, cart["cart"], batch.get("output_folder") or s3.OUTPUT_FOLDER) + xlsx.name
-        s3c.upload_file(str(xlsx), bucket, key, ExtraArgs={"ContentType": XLSX_TYPE})
-        self._set(cart, state="done", summary=summary, report=f"s3://{bucket}/{key}",
+        # the xlsx stays local (only the CSV goes to S3); report = the day's CSV the videos' rows went to
+        csv_uris = sorted({f["s3_csv"] for f in cart["files"] if f.get("s3_csv")})
+        self._set(cart, state="done", summary=summary, report=csv_uris[0] if csv_uris else None,
                   error=None if not counts["failed"] else f"{counts['failed']} video(s) could not be analysed (see the files)")
 
-    def analyse_file(self, s3c, bucket: str, threshold: float | None, cart: str, f: dict) -> list[dict]:
+    def analyse_file(self, s3c, bucket: str, threshold: float | None, cart: str, f: dict, *,
+                     s3_output: bool = True, day: date | None = None) -> list[dict]:
         """Download s3://bucket/f["key"] and analyse it; returns its screenshot records
-        (screenshots.screenshot_results). Also used by the admin uploads (s3_upload.py). `f` is updated
-        while it runs: state downloading -> processing -> done / failed, media_id, extraction_id, ..."""
+        (screenshots.screenshot_results). Also used by the admin uploads (s3_upload.py, s3_output=False: they
+        upload their own CSV). `f` is updated while it runs: state downloading -> processing -> done / failed,
+        media_id, extraction_id, ... With s3_output the video's CSV is uploaded to
+        the processing day's card_<N>/output_data/ CSV and the file is "done" only once it is verified there (f["s3_csv"])."""
         self._set(f, state="downloading")
         path = new_upload_path(f["name"])
         try:
@@ -192,7 +199,8 @@ class S3BatchRunner:
         self._set(f, state="processing", media_id=media["id"], recording_start_time=start)
         job, _ = self.extractions.create(media, None, None, new_run=True, run_detection=True,
                                          threshold=threshold, strategy=None, store_id=cart,
-                                         recording_start_time=start, source="s3")
+                                         recording_start_time=start, source="s3", s3_output=s3_output,
+                                         s3_bucket=bucket, s3_cart=cart, s3_day=f"{day:%d-%m-%Y}" if day else None)
         self._set(f, extraction_id=job["id"])
         ext, run = self._wait(job["id"])
         if run:
@@ -210,17 +218,24 @@ class S3BatchRunner:
         if not run or run["state"] != "done":         # listed with a blank score, never as non-uniform
             self._set(f, state="failed", error=f"Uniform detection {run['state'] if run else 'not started'}: "
                                                f"{(run or {}).get('error') or 'no detail'}")
+            return records
+        out = self.db.s3_output(run["id"]) if s3_output else None
+        if s3_output and (not out or out["state"] != "completed"):
+            self._set(f, state="failed", error="The video's CSV could not be uploaded to S3: "
+                                               f"{(out or {}).get('error') or 'the upload did not finish'}")
         else:
-            self._set(f, state="done")
+            self._set(f, state="done", s3_csv=f"s3://{out['bucket']}/{out['key']}" if out else None)
         return records
 
     def _wait(self, jid: str) -> tuple[dict, dict | None]:
-        """Until the extraction and its automatic detection run have finished."""
+        """Until the extraction, its automatic detection run and (S3 output) the run's CSV upload have finished."""
         while True:
             ext = self.db.extraction(jid)
             runs = self.db.detection_runs(jid)
+            out = self.db.s3_output(runs[0]["id"]) if ext.get("s3_output") and runs and runs[0]["state"] == "done" else None
             busy = (ext["state"] in ("queued", "running") or self.extractions.detection_requested(jid)
-                    or (runs and runs[0]["state"] in ("queued", "running")))
+                    or (runs and runs[0]["state"] in ("queued", "running"))
+                    or (out is not None and out["state"] not in ("completed", "failed")))
             if not busy or self._stop.is_set():
                 return ext, runs[0] if runs else None
             time.sleep(POLL_SECONDS)

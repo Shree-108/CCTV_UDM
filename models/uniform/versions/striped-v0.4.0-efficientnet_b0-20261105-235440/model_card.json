@@ -1,0 +1,137 @@
+{
+  "backend": "torchvision",
+  "arch": "efficientnet_b0",
+  "classes": [
+    "non_striped",
+    "striped"
+  ],
+  "any_rotation_augment": true,
+  "crop_size": [],
+  "input_size": [
+    224,
+    224
+  ],
+  "pretrained": "ImageNet",
+  "epochs": 12,
+  "seed": 42,
+  "batch": 32,
+  "lr": 0.0003,
+  "best_val_acc": 1.0,
+  "best_val_loss": 0.0008509597973898053,
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.2532,
+      "val_loss": 0.0019,
+      "val_acc": 1.0,
+      "seconds": 148.8
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.0409,
+      "val_loss": 0.0009,
+      "val_acc": 1.0,
+      "seconds": 127.4
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.0164,
+      "val_loss": 0.0067,
+      "val_acc": 1.0,
+      "seconds": 111.1
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.0275,
+      "val_loss": 0.0059,
+      "val_acc": 1.0,
+      "seconds": 202.6
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.036,
+      "val_loss": 0.0032,
+      "val_acc": 1.0,
+      "seconds": 147.5
+    },
+    {
+      "epoch": 6,
+      "train_loss": 0.0123,
+      "val_loss": 0.0028,
+      "val_acc": 1.0,
+      "seconds": 127.7
+    },
+    {
+      "epoch": 7,
+      "train_loss": 0.007,
+      "val_loss": 0.0019,
+      "val_acc": 1.0,
+      "seconds": 123.1
+    },
+    {
+      "epoch": 8,
+      "train_loss": 0.004,
+      "val_loss": 0.0018,
+      "val_acc": 1.0,
+      "seconds": 175.8
+    },
+    {
+      "epoch": 9,
+      "train_loss": 0.0067,
+      "val_loss": 0.0013,
+      "val_acc": 1.0,
+      "seconds": 157.4
+    },
+    {
+      "epoch": 10,
+      "train_loss": 0.0026,
+      "val_loss": 0.0012,
+      "val_acc": 1.0,
+      "seconds": 122.1
+    },
+    {
+      "epoch": 11,
+      "train_loss": 0.0034,
+      "val_loss": 0.0011,
+      "val_acc": 1.0,
+      "seconds": 104.3
+    },
+    {
+      "epoch": 12,
+      "train_loss": 0.0033,
+      "val_loss": 0.0011,
+      "val_acc": 1.0,
+      "seconds": 164.8
+    }
+  ],
+  "weights_kept": "last",
+  "train_counts": {
+    "train/non_striped/striped_v1": 406,
+    "train/striped/striped_v1": 142,
+    "val/non_striped/striped_v1": 20,
+    "val/striped/striped_v1": 14,
+    "train/striped/earlier_crops": 141,
+    "train/non_striped/earlier_crops": 83,
+    "train/striped/generated_horizontal_bw": 12,
+    "train/striped/generated_wide_vertical_bw": 12,
+    "train/non_striped/generated_coloured_vertical": 12,
+    "train/non_striped/generated_plain_dark": 12,
+    "train/non_striped/generated_plain_light": 12,
+    "train/non_striped/generated_plain_colour": 12,
+    "train/non_striped/generated_print": 12
+  },
+  "data": "C:\\SHREE\\YATRIKART\\PROJECTS\\YK_CCTV_U_D_M_main\\YK_CCTV_U_D_M\\runs\\striped_train\\20261105-235440\\data",
+  "sha256": "a5272468d66cbe1af0827dc1b6a96781c70185df67d2930b3f2c7d56b13497dc",
+  "status": "candidate - not approved for production",
+  "objective": "person wearing ANY black-and-white striped clothing",
+  "dataset_version": "striped_v1-55475788e0",
+  "crop_mode": "garment",
+  "input": "224x224 letterboxed",
+  "splits": "data/udm_v1/splits.yaml (video-level; test frozen)",
+  "created": "20261105-235440",
+  "class_map_note": "striped -> app label 'uniform', non_striped -> 'non_uniform' (config class_map)",
+  "preprocessing": {
+    "crop_size": null
+  },
+  "weights": "last epoch (fixed schedule)"
+}

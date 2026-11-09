@@ -38,6 +38,7 @@ data/non_uniform/*
 data/uncertain/*
 data/validation/*
 data/reference/
+data/udm_*/
 !data/**/.gitkeep
 
 # Candidate models (training/candidate.py) and config snapshots (register_model --activate):

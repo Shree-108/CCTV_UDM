@@ -88,7 +88,7 @@ def test_storage_status_is_honest(client, monkeypatch):
     assert st["mode"] == "local" and st["s3"]["configured"] is False and st["s3"]["uploads_enabled"] is False
     monkeypatch.setenv("SU_S3_BUCKET", "example-bucket")
     s3 = client.get("/api/frame-results").json()["storage"]["s3"]
-    assert s3["configured"] is True and s3["uploads_enabled"] is False and "not implemented" in s3["note"]
+    assert s3["configured"] is True and s3["uploads_enabled"] is False and "card<N>_YYYY_MM_DD_pic<K>.jpg" in s3["note"]
 
 
 def test_model_missing_is_visible_on_dashboard(client, tmp_path):

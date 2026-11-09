@@ -26,6 +26,15 @@ model:
   # When set, every deployment verifies it has the exact same model file.
   sha256: "5d785e8bd947bca545dd2c9a4397bdcf876449e831f5195173f2d3f1f1cc54af"
   task: classify                   # Ultralytics YOLO-cls (training/train.py)
+  # yolo_cls    : Ultralytics YOLO-cls weights (the production v0.2.0 model)
+  # torchvision : EfficientNet-B0 / MobileNetV3 checkpoint (training/train_torchvision.py, training/udm_train.py)
+  backend: yolo_cls
+  # Which part of the person the classifier sees:
+  # torso_band : 12-55 % of the person box height (v0.2.0 was trained on this; the production default)
+  # garment    : the shirt located from body keypoints (backend/uniform/garment.py, models/person/yolo11n-pose.pt),
+  #              letterboxed to 224 x 224 - the v0.3.0 candidates are trained on this. Set by
+  #              `python -m training.register_model --activate <candidate>`; never by hand without its model.
+  crop_mode: torso_band
   imgsz: 224                       # classifier input size used in training
   # [width, height] every torso crop is resized to before the classifier sees it. MUST match how the
   # weights were trained: training/bootstrap.py (v0.1.0, v0.2.0) resized every crop to 112x160 (its
@@ -39,6 +48,10 @@ model:
     uniform: uniform
     non_uniform: non_uniform
     uncertain: uncertain
+    # striped-clothing candidates (training/striped_train.py: "a person wearing ANY black-and-white stripes").
+    # If such a model is activated, the reports' "uniform" means "black-and-white striped clothing".
+    striped: uniform
+    non_striped: non_uniform
 
 person_detector:
   path: models/person/yolo11n.pt   # official COCO model; downloaded here on first run if missing

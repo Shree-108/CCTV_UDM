@@ -1,0 +1,148 @@
+{
+  "backend": "torchvision",
+  "arch": "mobilenet_v3_large",
+  "classes": [
+    "non_uniform",
+    "uniform"
+  ],
+  "crop_size": null,
+  "input_size": [
+    224,
+    224
+  ],
+  "pretrained": "ImageNet",
+  "epochs": 15,
+  "seed": 42,
+  "batch": 32,
+  "lr": 0.0003,
+  "best_val_acc": 1.0,
+  "best_val_loss": 1.0907092473644298e-06,
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.1183,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 61.7
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.0031,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 57.6
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.0043,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 59.2
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.0018,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 59.0
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.0091,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 59.4
+    },
+    {
+      "epoch": 6,
+      "train_loss": 0.0041,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 69.5
+    },
+    {
+      "epoch": 7,
+      "train_loss": 0.0001,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 65.8
+    },
+    {
+      "epoch": 8,
+      "train_loss": 0.0007,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 57.3
+    },
+    {
+      "epoch": 9,
+      "train_loss": 0.0002,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 57.7
+    },
+    {
+      "epoch": 10,
+      "train_loss": 0.0001,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 59.0
+    },
+    {
+      "epoch": 11,
+      "train_loss": 0.0012,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 56.8
+    },
+    {
+      "epoch": 12,
+      "train_loss": 0.0002,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 57.5
+    },
+    {
+      "epoch": 13,
+      "train_loss": 0.0001,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 59.7
+    },
+    {
+      "epoch": 14,
+      "train_loss": 0.0005,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 58.8
+    },
+    {
+      "epoch": 15,
+      "train_loss": 0.0004,
+      "val_loss": 0.0,
+      "val_acc": 1.0,
+      "seconds": 61.9
+    }
+  ],
+  "weights_kept": "last",
+  "train_counts": {
+    "train/non_uniform/cctv": 361,
+    "train/uniform/cctv": 118,
+    "val/non_uniform/cctv": 20,
+    "val/uniform/cctv": 14,
+    "train/non_uniform/earlier_crops": 83,
+    "train/uniform/earlier_crops": 141,
+    "train/non_uniform/generated_lookalikes": 108
+  },
+  "data": "C:\\SHREE\\YATRIKART\\PROJECTS\\YK_CCTV_U_D_M_main\\YK_CCTV_U_D_M\\runs\\udm_train\\20261105-232803\\data",
+  "sha256": "c19e904555d08b00dc38bdb2bd92c23af4e0ade696bcc0d9ff2b2fa31ce7d3f7",
+  "status": "candidate - not approved for production",
+  "dataset_version": "udm_v1-11145c5fe9",
+  "crop_mode": "garment",
+  "input": "224x224 letterboxed",
+  "splits": "data/udm_v1/splits.yaml (video-level; test frozen)",
+  "created": "20261105-232803",
+  "preprocessing": {
+    "crop_size": null
+  }
+}

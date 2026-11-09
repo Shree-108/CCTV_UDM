@@ -61,6 +61,8 @@ def activate(folder: Path, version: str | None, status: str | None) -> None:
     text = _set(text, "path", rel(weights))
     text = _set(text, "sha256", digest)
     text = _set(text, "crop_size", f"[{cs[0]}, {cs[1]}]" if cs else "null", raw=True)
+    text = _set(text, "backend", card.get("backend") or "yolo_cls")           # yolo_cls | torchvision
+    text = _set(text, "crop_mode", card.get("crop_mode") or "torso_band")     # the crop the weights were trained on
     text = _set(text, "dataset_version", str(card.get("dataset_version") or card.get("dataset") or ""))
     text = _set(text, "version", version or folder.name)
     text = _set(text, "status", status or "candidate")

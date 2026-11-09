@@ -10,9 +10,11 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from backend.extraction import business_csv, master_csv, reports
+from backend.core import s3
+from backend.extraction import business_csv, cart_report, master_csv, reports
 from backend.extraction.detect import RESULT_FIELDS, normalize
 from backend.extraction.extractor import row_meta
+from backend.extraction.s3_output import OutputRejected
 from backend.extraction.screenshots import screenshot_results
 from backend.extraction.runner import EXTRACTIONS, DuplicateJob, ExtractionRejected, manifest_path, plan_for, read_manifest
 
@@ -45,6 +47,10 @@ class ExtractionIn(BaseModel):
     new_run: bool = Field(default=False, description="Extract again even if an identical finished job exists")
     run_detection: bool = Field(default=False, description="Run the uniform model on the frames when extraction finishes")
     threshold: Optional[float] = Field(default=None, ge=0.5, le=0.99, description="Detection threshold (default: Settings)")
+    card_id: Optional[int] = Field(default=None, ge=1, le=99999, description="S3 cart folder of the CSV report "
+                                   "(config/carts.yaml). Default: the store ID when it is a configured cart")
+    s3_day: Optional[str] = Field(default=None, max_length=10, description="The video's S3 input day folder "
+                                  "DD-MM-YYYY (recorded only: the report always goes to today's output folder)")
 
 
 def _job_out(j: dict) -> dict:
@@ -103,12 +109,18 @@ def extraction_plan(request: Request, mid: str, interval_seconds: Optional[float
 def create_extraction(request: Request, body: ExtractionIn):
     s = st(request)
     media = s.db.media(body.media_id) or _404("Media")
+    cart = None
+    if body.card_id is not None:
+        cart = s3.cart_name(str(body.card_id))
+        if cart not in cart_report.known_carts():
+            raise HTTPException(422, f"Card ID {body.card_id} is not configured in config/carts.yaml")
     try:
         job, reused = s.extractions.create(media, body.interval_seconds, body.include_initial, body.new_run,
                                            body.run_detection, body.threshold, strategy=body.sampling_strategy,
                                            sample_count=body.sample_count, seed=body.random_seed,
                                            store_id=body.store_id, camera_id=body.camera_id,
-                                           recording_start_time=body.recording_start_time)
+                                           recording_start_time=body.recording_start_time,
+                                           s3_cart=cart, s3_day=body.s3_day)
     except DuplicateJob as e:
         raise HTTPException(409, {"message": str(e), "job_id": e.job["id"]})
     except ValueError as e:                      # ExtractionRejected and plan errors
@@ -123,7 +135,28 @@ def list_extractions(request: Request, media_id: Optional[str] = None, limit: in
 
 @router.get("/extractions/{eid}")
 def get_extraction(request: Request, eid: str):
-    return _job_out(st(request).db.extraction(eid) or _404("Extraction"))
+    """The job, its latest run's CSV upload to S3 and the overall status: "completed" only once the CSV is
+    verified in S3 (jobs with S3 output)."""
+    s = st(request)
+    j = s.db.extraction(eid) or _404("Extraction")
+    runs = s.db.detection_runs(eid)
+    run = runs[0] if runs else None
+    out = _s3_out(s, run["id"]) if run else None
+    return _job_out(j) | {"s3_output": out,
+                          "status": _status(j, run, out, not run and s.extractions.detection_requested(eid))}
+
+
+def _status(j: dict, run: dict | None, out: dict | None, detection_pending: bool = False) -> str:
+    """processing | completed | failed | extracted (frames only, no detection run)."""
+    active = ("queued", "running")
+    if (j["state"] in active or detection_pending or (run and run["state"] in active)
+            or (out and out["state"] not in ("completed", "failed"))):
+        return "processing"
+    if j["state"] != "done" or (run and run["state"] != "done") or (out and out["state"] == "failed"):
+        return "failed"
+    if not run:
+        return "extracted"
+    return "completed" if out or not j.get("s3_output") else "processing"
 
 
 @router.post("/extractions/{eid}/cancel")
@@ -364,9 +397,14 @@ class DetectIn(BaseModel):
     new_run: bool = False
 
 
-def _run_out(r: dict) -> dict:
+def _s3_out(s, run_id: str) -> dict | None:
+    """The run's CSV upload to S3 (state, s3_uri, verified, error) - None when the job has no S3 output."""
+    return s.s3_outputs.get(run_id)
+
+
+def _run_out(r: dict, s=None) -> dict:
     base = f"/api/detection-runs/{r['id']}"
-    return r | {"results_csv_url": f"{base}/detection_results.csv", "results_url": f"{base}/results",
+    return r | {"s3_output": _s3_out(s, r["id"]) if s else None,"results_csv_url": f"{base}/detection_results.csv", "results_url": f"{base}/results",
                 "screenshot_summary_url": f"{base}/screenshot_summary.csv",
                 "compliance_details_url": f"{base}/uniform_compliance_details.csv"}
 
@@ -394,19 +432,51 @@ def start_detection(request: Request, eid: str, body: DetectIn):
         raise HTTPException(409, {"message": str(e), "run_id": e.job["id"]})
     except ExtractionRejected as e:
         raise HTTPException(422, str(e))
-    return _run_out(run) | {"reused": reused}
+    return _run_out(run, s) | {"reused": reused}
 
 
 @router.get("/extractions/{eid}/detections")
 def list_detection_runs(request: Request, eid: str):
     s = st(request)
     s.db.extraction(eid) or _404("Extraction")
-    return {"runs": [_run_out(r) for r in s.db.detection_runs(eid)]}
+    return {"runs": [_run_out(r, s) for r in s.db.detection_runs(eid)]}
 
 
 @router.get("/detection-runs/{rid}")
 def get_detection_run(request: Request, rid: str):
-    return _run_out(st(request).db.detection_run(rid) or _404("Detection run"))
+    s = st(request)
+    return _run_out(s.db.detection_run(rid) or _404("Detection run"), s)
+
+
+class S3RetryIn(BaseModel):
+    card_id: Optional[int] = Field(default=None, ge=1, le=99999, description="Set / replace the S3 cart folder")
+
+
+@router.get("/detection-runs/{rid}/s3-output")
+def get_s3_output(request: Request, rid: str):
+    s = st(request)
+    s.db.detection_run(rid) or _404("Detection run")
+    return _s3_out(s, rid) or _404("S3 output of this run")
+
+
+@router.post("/detection-runs/{rid}/s3-output/retry", status_code=202)
+def retry_s3_output(request: Request, rid: str, body: S3RetryIn):
+    """Retry a failed CSV / image upload (e.g. after fixing the credentials, or with the missing Card ID)."""
+    s = st(request)
+    try:
+        return s.s3_outputs.retry(rid, body.card_id)
+    except KeyError:
+        _404("S3 output of this run")
+    except OutputRejected as e:
+        raise HTTPException(409, str(e))
+
+
+@router.get("/s3-output/cards")
+def s3_output_cards():
+    """Card IDs a job's CSV can be filed under (config/carts.yaml) and the bucket; never any credential."""
+    return {"bucket": s3.bucket_name(), "output_folder": s3.OUTPUT_FOLDER,
+            "cards": [{"card_id": cart_report.cart_id(c), "cart": c, "store_name": n}
+                      for c, n in cart_report.known_carts().items()]}
 
 
 @router.post("/detection-runs/{rid}/cancel")

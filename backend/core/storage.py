@@ -6,8 +6,8 @@ the returned URI is what goes into the CSVs (`original_image_path`, `annotated_i
   LocalStorage   the only backend that exists: the file stays where it was written and the URI is
                  its project-relative path (storage/extractions/...).
 
-Evidence storage on S3 is NOT implemented (S3 is used only by the cart batches of POST /api/s3/process,
-which read input_data/ and upload their results to output_data/). A future S3 backend would implement the same two methods: upload the file
+Evidence storage on S3 is NOT implemented. S3 holds only the CSV / xlsx reports (every analysed video's CSV,
+backend/extraction/s3_output.py; the cart batches' xlsx) and the admin uploads' input videos. A future S3 backend would implement the same two methods: upload the file
 to a private bucket (credentials from the standard AWS provider chain - never from code or
 config files) and return the real object URI (s3://bucket/key). SU_S3_BUCKET does not change where
 evidence files are stored.
@@ -53,9 +53,10 @@ class LocalStorage:
         return {
             "mode": self.name, "path": rel(STORAGE), "frames_path": rel(STORAGE / "extractions"),
             "s3": {"configured": bool(bucket), "bucket": bucket or None, "uploads_enabled": False,
-                   "note": ("S3 evidence storage is not implemented: evidence files are on this PC's local disk. S3 is "
-                                     "used only by the cart batches (POST /api/s3/process) and the admin S3 Upload page "
-                                     "(input videos to input_data, reports to the cart's output_data folder).")},
+                   "note": ("Screenshots and annotated images are kept on this PC's local disk. Every analysed video's "
+                            "CSV rows are appended to today's MM-YYYY/DD-MM-YYYY/card_<N>/output_data/card<N>_YYYY_MM_DD.csv in "
+                            "S3 with each row's detection image next to it (card<N>_YYYY_MM_DD_pic<K>.jpg), verified "
+                            "there; the admin S3 Upload page also stores the input video in input_data.")},
         }
 
 

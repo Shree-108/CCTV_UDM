@@ -240,7 +240,9 @@ def test_navigation_is_result_oriented_and_routes_are_kept():
     groups = re.findall(r"\{ label: '([^']+)'(, hidden: true)?, items: \[(.*?)\] \}", src, re.S)
     visible = [h for _, hidden, body in groups if not hidden for h in re.findall(r"href: '([^']+)'", body)]
     hidden = [h for _, hid, body in groups if hid for h in re.findall(r"href: '([^']+)'", body)]
-    assert visible == ["/analysis/video", "/results", "/s3-upload", "/alerts", "/settings", "/help", "/cameras"]
+    # no "/s3-upload": the separate admin S3 Upload page was removed; the Card ID is chosen when starting an
+    # analysis and its rows go to S3 automatically (the /api/s3/uploads API itself is kept, tests/test_s3_uploads.py)
+    assert visible == ["/analysis/video", "/results", "/alerts", "/settings", "/help", "/cameras"]
     assert {"/", "/analysis/image", "/extract", "/analytics"} <= set(hidden)
     assert re.search(r"href: '/cameras'[^}]*comingSoon: true", src)            # still marked unavailable
     for h in hidden + visible[:-1]:                                            # every page still has its route

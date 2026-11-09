@@ -47,6 +47,12 @@ def load() -> dict[str, Any]:
     m.setdefault("legacy_paths", [])
     m["sha256"] = (m.get("sha256") or "").strip().lower()
     m.setdefault("task", "classify")
+    m.setdefault("backend", "yolo_cls")          # yolo_cls | torchvision (backend/uniform/classifier.py)
+    if m["backend"] not in ("yolo_cls", "torchvision"):
+        raise ValueError(f"{CONFIG_PATH.name}: model.backend must be yolo_cls or torchvision")
+    m.setdefault("crop_mode", "torso_band")        # torso_band | garment (backend/uniform/garment.py)
+    if m["crop_mode"] not in ("torso_band", "garment"):
+        raise ValueError(f"{CONFIG_PATH.name}: model.crop_mode must be torso_band or garment")
     m.setdefault("imgsz", 224)
     cs = m.get("crop_size")
     if cs is not None and not (isinstance(cs, list) and len(cs) == 2 and all(isinstance(v, int) and v > 0 for v in cs)):

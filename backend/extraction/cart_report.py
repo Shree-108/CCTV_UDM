@@ -102,18 +102,20 @@ def score(rec: dict) -> int | None:
     return round(100 * sum(scores) / len(scores)) if scores else None
 
 
-def rows(cart: str, records: list[dict]) -> list[dict]:
-    """Report rows for screenshot records of one cart (any order); also what each picN is."""
+def rows(cart: str, records: list[dict], start: int = 1) -> list[dict]:
+    """Report rows for screenshot records of one cart (any order); also what each picN is. Numbered from
+    `start` (rows appended to the daily CSV continue its numbering)."""
     def key(r):
         return (r["recording_timestamp"] or "~", r["source_video"], r["video_timestamp_seconds"])
     out, store, cid = [], store_name(cart), cart_id(cart)
-    for n, r in enumerate(sorted(records, key=key), 1):
+    for n, r in enumerate(sorted(records, key=key), start):
         when = datetime.fromisoformat(r["recording_timestamp"]) if r["recording_timestamp"] else None
         out.append({"cart_id": cid, "store": store, "date": when.replace(hour=0, minute=0, second=0, microsecond=0) if when else None,
                     "time": when.time().replace(microsecond=0) if when else f"video {r['video_timestamp_hhmmss'][:8]}",
                     "img": f"pic{n}", "score": score(r), "remark": f"{n}. {remark(r)}",
                     "source_video": r["source_video"], "image_filename": r["image_filename"],
-                    "original_image_path": r["original_image_path"]})
+                    "original_image_path": r["original_image_path"],
+                    "annotated_image_path": r.get("annotated_image_path") or ""})
     return out
 
 
@@ -125,11 +127,15 @@ def write_csv(path: Path, report_rows: list[dict]) -> Path:
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(HEADERS)
-        for r in report_rows:
-            w.writerow([r["cart_id"], r["store"], f"{r['date']:%d-%m-%Y}" if r["date"] else "",
-                        r["time"] if isinstance(r["time"], str) else r["time"].strftime("%H:%M:%S"),
-                        r["img"], "" if r["score"] is None else r["score"], r["remark"]])
+        w.writerows(csv_row(r) for r in report_rows)
     return path
+
+
+def csv_row(r: dict) -> list:
+    """One report row as written to a CSV (write_csv; the daily S3 CSV)."""
+    return [r["cart_id"], r["store"], f"{r['date']:%d-%m-%Y}" if r["date"] else "",
+            r["time"] if isinstance(r["time"], str) else r["time"].strftime("%H:%M:%S"),
+            r["img"], "" if r["score"] is None else r["score"], r["remark"]]
 
 
 def write_xlsx(path: Path, report_rows: list[dict]) -> Path:

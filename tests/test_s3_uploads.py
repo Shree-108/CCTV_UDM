@@ -5,6 +5,7 @@ import csv
 import hashlib
 import io
 import time
+from datetime import date
 
 import pytest
 from botocore.exceptions import ClientError
@@ -19,36 +20,24 @@ from tests.test_s3_batch import BUCKET, HEADER, FakeS3
 NVR = "20261104_20261104215126_20261104215614_192126.mp4"     # recording 04-11-2026 21:51:26
 DAY = "11-2026/04-11-2026"
 IN = f"{DAY}/cart_50/input_data/{NVR}"
-OUT = f"{DAY}/cart_50/output_data/"
+TODAY = s3.today()                                            # output: the processing day, not the video's
+OUT = f"{TODAY:%m-%Y}/{TODAY:%d-%m-%Y}/card_50/output_data/"
+DAILY = f"card50_{TODAY:%Y_%m_%d}.csv"
+
+
+def csvs(fake):
+    return [k for k in fake.keys(OUT) if k.endswith(".csv")]
+
+
+def images(fake):
+    return [k for k in fake.objects if k.lower().endswith((".jpg", ".jpeg", ".png"))]
 VIDEO = (MEDIA / "dvr_grid.mp4").read_bytes()
 
 
 class FakeS3Put(FakeS3):
-    """Adds conditional PUT with a SHA-256 check and HEAD with checksums, as S3 does them."""
+    """FakeS3 starting empty (conditional PUT / HEAD are in FakeS3 itself)."""
     def __init__(self, objects=None, **kw):
         super().__init__(objects or {}, **kw)
-        self.checksums: dict[str, str] = {}
-        self.puts: list[str] = []
-        self.fail_put = lambda key: False
-
-    def put_object(self, Bucket, Key, Body, ContentType, IfNoneMatch=None, ChecksumSHA256=None, Metadata=None):
-        if self.fail_put(Key):
-            raise ClientError({"Error": {"Code": "InternalError", "Message": "S3 is down"}}, "PutObject")
-        if IfNoneMatch == "*" and Key in self.objects:
-            raise ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
-        data = Body.read()
-        if ChecksumSHA256 != base64.b64encode(hashlib.sha256(data).digest()).decode():
-            raise ClientError({"Error": {"Code": "BadDigest"}}, "PutObject")
-        self.objects[Key], self.checksums[Key], self.content_types[Key] = data, ChecksumSHA256, ContentType
-        self.puts.append(Key)
-
-    def head_object(self, Bucket, Key, ChecksumMode=None):
-        if Key not in self.objects:
-            raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
-        h = {"ContentLength": len(self.objects[Key])}
-        if Key in self.checksums:
-            h["ChecksumSHA256"] = self.checksums[Key]
-        return h
 
 
 @pytest.fixture()
@@ -195,15 +184,19 @@ def test_upload_process_and_report(admin, fake, real_model, master_dir, states, 
     assert job["how"] == "created" and job["card_id"] == 50 and job["cart"] == "cart_50"
     assert job["day"] == "04-11-2026" and job["day_source"] == "file_name"
     assert job["s3_input"] == f"s3://{BUCKET}/{IN}"
-    assert job["output_key"] == f"{OUT}cart_50_{NVR[:-4]}_{job['id']}.csv"
+    assert job["output_key"] == f"{OUT}{DAILY}"                                       # today's CSV
     assert "local_path" not in job and "report_path" not in job
 
     done = wait(admin, job["id"])
     assert done["state"] == "completed", done
-    assert states == ["uploading", "processing", "generating_report", "uploading_output", "completed"]
-    # input: the uploaded bytes, verified; output: exactly one CSV, nothing else in output_data
+    assert states == ["uploading", "processing", "generating_report", "uploading_output", "uploading_images",
+                      "completed"]
+    # input: the uploaded bytes, verified; output: the day's CSV + one detection image per row
     assert fake.objects[IN] == VIDEO and fake.content_types[IN] == "video/mp4" and done["input_verified"]
-    assert fake.keys(OUT) == [done["output_key"]] and fake.content_types[done["output_key"]] == "text/csv"
+    assert csvs(fake) == [done["output_key"]] and fake.content_types[done["output_key"]] == "text/csv"
+    assert images(fake) == [f"{OUT}card50_{TODAY:%Y_%m_%d}_pic{i}.jpg" for i in range(1, 5)]
+    assert all(fake.content_types[k] == "image/jpeg" for k in images(fake))
+    assert done["csv_first_row"] == 1 and done["images_uploaded"] == 4
     header, *rows = list(csv.reader(io.StringIO(fake.objects[done["output_key"]].decode())))
     assert header == HEADER and len(rows) == 4
     for i, (cid, store, day, t, img, score, remark) in enumerate(rows, 1):
@@ -211,10 +204,11 @@ def test_upload_process_and_report(admin, fake, real_model, master_dir, states, 
         assert t >= "21:51:26" and remark == f"{i}. person2 is not wearing the dress, others wearing"
     assert done["summary"] == {"screenshots": 4, "unreadable_frames": 0, "people": 8, "uniform": 4,
                                "not_uniform": 4, "manual_review": 0}
-    # the admin portal sees the rows and can download the same CSV
+    # the admin portal sees this video's rows and can download them (here the day's CSV has only this video)
     assert [r["img name "] for r in done["report_rows"]] == ["pic1", "pic2", "pic3", "pic4"]
     dl = admin.get(done["report_url"])
     assert dl.status_code == 200 and dl.content == fake.objects[done["output_key"]]
+    assert done["report_sha256"] == hashlib.sha256(fake.objects[done["output_key"]]).hexdigest()
     assert any(u["id"] == job["id"] for u in admin.get("/api/s3/uploads").json()["uploads"])
     assert not list(s3_upload.INCOMING.glob("*"))                   # local copy deleted once verified in S3
     assert master_rows(master_dir) == 4
@@ -222,7 +216,7 @@ def test_upload_process_and_report(admin, fake, real_model, master_dir, states, 
     # the same video again: the same job, nothing uploaded or analysed twice
     again = post(admin)
     assert again.status_code == 200 and again.json()["how"] == "duplicate" and again.json()["id"] == job["id"]
-    assert fake.puts.count(IN) == 1 and len(fake.keys(OUT)) == 1 and master_rows(master_dir) == 4
+    assert fake.puts.count(IN) == 1 and len(csvs(fake)) == 1 and master_rows(master_dir) == 4
     assert not list(s3_upload.INCOMING.glob("*"))
 
 
@@ -249,7 +243,7 @@ def test_retry_resumes_without_duplicates(admin, fake, real_model, master_dir, m
     assert r.status_code == 202 and r.json()["attempts"] == 2
     done = wait(admin, job["id"])
     assert done["state"] == "completed" and done["extraction_id"] == job["extraction_id"]   # analysis reused
-    assert fake.puts.count(job["input_key"]) == 1 and fake.keys(OUT) == [done["output_key"]]
+    assert fake.puts.count(job["input_key"]) == 1 and csvs(fake) == [done["output_key"]]
     assert master_rows(master_dir) == 4                                                   # not appended twice
     r = admin.post(f"/api/s3/uploads/{job['id']}/retry")
     assert r.status_code == 409 and "Only a failed job" in r.json()["detail"]

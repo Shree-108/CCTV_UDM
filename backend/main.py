@@ -36,6 +36,7 @@ from backend.core.settings import Settings
 from backend.database.db import DB
 from backend.extraction.runner import ExtractionRunner
 from backend.extraction.s3_batch import S3BatchRunner
+from backend.extraction.s3_output import S3OutputRunner
 from backend.extraction.s3_upload import S3UploadRunner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
@@ -54,6 +55,10 @@ class AppState:
         self.db.interrupt_detection_runs()
         self.extractions = ExtractionRunner(self.db, self.settings, self.models)
         self.s3_batches = S3BatchRunner(self.db, self.extractions)
+        # every finished analysis uploads its CSV to S3 (same S3 client as the batches / admin uploads)
+        self.s3_outputs = S3OutputRunner(self.db, client_factory=lambda: self.s3_batches.client_factory())
+        self.extractions.on_run_done = self.s3_outputs
+        logging.getLogger(__name__).info("S3 CSV uploads resumed: %d", self.s3_outputs.resume())
         self.db.interrupt_s3_uploads()
         self.s3_uploads = S3UploadRunner(self.db, self.s3_batches)
 
@@ -62,6 +67,7 @@ class AppState:
         self.s3_uploads.shutdown()
         self.s3_batches.shutdown()
         self.extractions.shutdown()
+        self.s3_outputs.shutdown()
         self.jobs.shutdown()
 
 

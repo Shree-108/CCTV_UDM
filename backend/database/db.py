@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS s3_uploads (    -- admin video uploads to S3 (backend
   day TEXT NOT NULL,                    -- S3 day folder, DD-MM-YYYY
   day_source TEXT NOT NULL,             -- file_name | selected
   bucket TEXT NOT NULL, input_key TEXT NOT NULL, output_key TEXT NOT NULL,
-  state TEXT NOT NULL,                  -- queued | uploading | processing | generating_report | uploading_output | completed | failed
+  state TEXT NOT NULL,                  -- queued | uploading | processing | generating_report | uploading_output | uploading_images | completed | failed
   failed_stage TEXT,                    -- the state in which it failed
   error TEXT,
   attempts INTEGER NOT NULL DEFAULT 1,
@@ -124,6 +124,21 @@ CREATE TABLE IF NOT EXISTS s3_uploads (    -- admin video uploads to S3 (backend
   report_path TEXT, report_sha256 TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_s3_uploads_sha ON s3_uploads(sha256, cart);
+CREATE TABLE IF NOT EXISTS s3_outputs (    -- CSV report of a finished detection run, uploaded to S3 (backend/extraction/s3_output.py)
+  run_id TEXT PRIMARY KEY,              -- the detection run whose results the CSV holds
+  extraction_id TEXT NOT NULL,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT,
+  state TEXT NOT NULL,                  -- queued | generating_report | uploading | uploading_images | completed | failed
+  failed_stage TEXT, error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  bucket TEXT, cart TEXT,
+  day TEXT,                             -- S3 day folder, DD-MM-YYYY
+  day_source TEXT,                      -- processing_date (older rows: selected | recording_start | file_name)
+  folder TEXT,                          -- output_data
+  key TEXT,                             -- full object key of the CSV
+  report_path TEXT, size_bytes INTEGER, sha256 TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_s3_outputs_extraction ON s3_outputs(extraction_id, created_at);
 """
 
 # Columns added after the first release (additive migrations, applied on start-up).
@@ -145,12 +160,26 @@ EXTRACTION_COLUMNS = {
     "camera_id": "TEXT",
     "recording_start_time": "TEXT",  # real clock time of the video's first frame, if known (ISO 8601)
     "source": "TEXT",                # upload | cctv_adapter   (NULL = upload)
+    # S3 output of the job's CSV reports (backend/extraction/s3_output.py). NULL / 0 = no upload (jobs created
+    # before this existed, and the admin uploads, which upload their own CSV).
+    "s3_output": "INTEGER",          # 1 = every finished detection run's CSV is uploaded to S3 and verified
+    "s3_bucket": "TEXT",
+    "s3_cart": "TEXT",               # cart folder (cart_50); NULL = from store_id when it is a configured cart
+    "s3_day": "TEXT",                # input day folder DD-MM-YYYY (recorded only; output = processing day)
+    "s3_folder": "TEXT",             # unused (output always goes to output_data)
 }
 
 # Media columns added later. sha256 = content hash of the received file, used to tell the user that the
 # same video was already received (duplicate delivery). The database is backed up before it is added.
 MEDIA_COLUMNS = {
     "sha256": "TEXT",
+}
+
+# S3 output columns (backend/extraction/s3_output.py, s3_upload.py), on both s3_outputs and s3_uploads.
+# The database is backed up before they are added.
+S3_RESULT_COLUMNS = {
+    "csv_first_row": "INTEGER",      # number of the job's first row in the day's CSV; set once it is verified in S3
+    "images_uploaded": "INTEGER",    # detection images in S3 next to the CSV
 }
 
 JSON_COLS = {"area", "settings", "live", "files", "plan", "failures", "summary"}
@@ -174,9 +203,11 @@ class DB:
                     c.execute(f"ALTER TABLE analyses ADD COLUMN {col} {typ}")
             c.execute("CREATE INDEX IF NOT EXISTS ix_analyses_camera ON analyses(camera_id, created_at)")
             cols = {r[1] for r in c.execute("PRAGMA table_info(extractions)")}
-            for col, typ in EXTRACTION_COLUMNS.items():
-                if col not in cols:
-                    c.execute(f"ALTER TABLE extractions ADD COLUMN {col} {typ}")
+            missing = {k: v for k, v in EXTRACTION_COLUMNS.items() if k not in cols}
+            if missing and c.execute("SELECT COUNT(*) FROM extractions").fetchone()[0]:
+                self._backup(c, "pre-extraction-columns")
+            for col, typ in missing.items():
+                c.execute(f"ALTER TABLE extractions ADD COLUMN {col} {typ}")
             cols = {r[1] for r in c.execute("PRAGMA table_info(media)")}
             missing = {k: v for k, v in MEDIA_COLUMNS.items() if k not in cols}
             if missing and c.execute("SELECT COUNT(*) FROM media").fetchone()[0]:
@@ -184,6 +215,13 @@ class DB:
             for col, typ in missing.items():
                 c.execute(f"ALTER TABLE media ADD COLUMN {col} {typ}")
             c.execute("CREATE INDEX IF NOT EXISTS ix_media_sha256 ON media(sha256)")
+            for table in ("s3_outputs", "s3_uploads"):
+                cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+                missing = {k: v for k, v in S3_RESULT_COLUMNS.items() if k not in cols}
+                if missing and c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]:
+                    self._backup(c, f"pre-{table}-images")
+                for col, typ in missing.items():
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
     def _backup(self, c: sqlite3.Connection, tag: str) -> Path:
         """Consistent copy of the whole database next to it, before a schema change."""
@@ -490,6 +528,34 @@ class DB:
         self._write("UPDATE s3_uploads SET failed_stage=state, state='failed', updated_at=?, "
                     "error='Server stopped during ' || replace(state, '_', ' ') || '; use Retry' "
                     "WHERE state NOT IN ('completed','failed')", (now_iso(),))
+
+    # ------------------------------------------------------------------ CSV reports uploaded to S3
+    def add_s3_output(self, o: dict) -> bool:
+        """False when the run already has one (each run's CSV is uploaded once)."""
+        cols = ",".join(o)
+        with self._lock, self._conn() as c:
+            cur = c.execute(f"INSERT OR IGNORE INTO s3_outputs ({cols}) VALUES ({','.join('?' * len(o))})",
+                            list(o.values()))
+            return cur.rowcount == 1
+
+    def update_s3_output(self, rid: str, **fields: Any) -> None:
+        fields["updated_at"] = now_iso()
+        self._write(f"UPDATE s3_outputs SET {', '.join(f'{k}=?' for k in fields)} WHERE run_id=?",
+                    [*fields.values(), rid])
+
+    def s3_output(self, rid: str) -> dict | None:
+        with self._conn() as c:
+            return self._row(c.execute("SELECT * FROM s3_outputs WHERE run_id=?", (rid,)).fetchone())
+
+    def s3_outputs_to_resume(self) -> list[str]:
+        """Run ids whose CSV upload has to (re)start after a restart: uploads that were in progress, and
+        finished runs of jobs with S3 output that never got their upload record (stopped in between)."""
+        with self._conn() as c:
+            busy = [r[0] for r in c.execute("SELECT run_id FROM s3_outputs WHERE state NOT IN ('completed','failed')")]
+            missing = [r[0] for r in c.execute(
+                "SELECT r.id FROM frame_detection_runs r JOIN extractions e ON e.id=r.extraction_id "
+                "LEFT JOIN s3_outputs o ON o.run_id=r.id WHERE e.s3_output=1 AND r.state='done' AND o.run_id IS NULL")]
+        return busy + missing
 
     # ------------------------------------------------------------------ analytics
     def analytics(self, start: str | None = None) -> dict:

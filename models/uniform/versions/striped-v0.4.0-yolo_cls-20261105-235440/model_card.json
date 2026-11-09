@@ -1,0 +1,42 @@
+{
+  "objective": "person wearing ANY black-and-white striped clothing",
+  "dataset_version": "striped_v1-55475788e0",
+  "train_counts": {
+    "train/non_striped/striped_v1": 406,
+    "train/striped/striped_v1": 142,
+    "val/non_striped/striped_v1": 20,
+    "val/striped/striped_v1": 14,
+    "train/striped/earlier_crops": 141,
+    "train/non_striped/earlier_crops": 83,
+    "train/striped/generated_horizontal_bw": 12,
+    "train/striped/generated_wide_vertical_bw": 12,
+    "train/non_striped/generated_coloured_vertical": 12,
+    "train/non_striped/generated_plain_dark": 12,
+    "train/non_striped/generated_plain_light": 12,
+    "train/non_striped/generated_plain_colour": 12,
+    "train/non_striped/generated_print": 12
+  },
+  "crop_mode": "garment",
+  "input": "224x224 letterboxed",
+  "seed": 42,
+  "splits": "data/udm_v1/splits.yaml (video-level; test frozen)",
+  "created": "20261105-235440",
+  "class_map_note": "striped -> app label 'uniform', non_striped -> 'non_uniform' (config class_map)",
+  "status": "candidate - not approved for production",
+  "backend": "yolo_cls",
+  "arch": "yolo11n-cls (ImageNet-pretrained)",
+  "classes": [
+    "non_striped",
+    "striped"
+  ],
+  "train_config": {
+    "epochs": 25,
+    "batch": 32,
+    "optimizer": "AdamW",
+    "lr0": 0.0005,
+    "cos_lr": true,
+    "weights": "last epoch (fixed schedule)",
+    "augment": "any rotation, flips, hsv, scale 0.2, erasing 0.3"
+  },
+  "sha256": "3c49bf0eda2406a2ebea0a9554d14310c7024c7239fccf809ae348a290eaa3d3"
+}

@@ -6,9 +6,11 @@ Pipeline per person:  person box -> visibility checks -> upper-body crop
 Only pixels inside the person's torso region are ever classified, so shelves,
 posters, packaging and background patterns cannot count as "uniform".
 
-Backends
-  * TrainedClassifier  - Ultralytics YOLO-cls model trained with training/train.py
+Backends (model.backend in config/uniform_config.yaml)
+  * TrainedClassifier  - yolo_cls: Ultralytics YOLO-cls model trained with training/train.py
                          (the production path).
+  * TorchvisionClassifier - torchvision: EfficientNet-B0 / MobileNetV3 checkpoint trained with
+                         training/train_torchvision.py (Phase B candidates; same crop, same class_map).
   * StripePatternBaseline - hand-crafted vertical-stripe analysis used only until a
                          trained model exists. It is a stop-gap, not a substitute
                          for training on real CCTV data.
@@ -127,6 +129,50 @@ class TrainedClassifier:
         return out
 
 
+class TorchvisionClassifier:
+    """EfficientNet-B0 / MobileNetV3 candidate (backend/uniform/torch_backbones.py checkpoint)."""
+    name = "trained"
+
+    def __init__(self, path: str, device: str):
+        from backend.uniform import torch_backbones as tb
+        self.model, self.meta = tb.load(path, device)
+        self.device = device
+        cmap = MODEL["class_map"]
+        unknown = sorted(set(self.meta["classes"]) - set(cmap))
+        if unknown:
+            raise ValueError(f"model classes {unknown} are not in class_map of config/uniform_config.yaml")
+        self.labels = {i: cmap[n] for i, n in enumerate(self.meta["classes"])}
+        if "uniform" not in self.labels.values():
+            raise ValueError("no model class maps to 'uniform' in config/uniform_config.yaml class_map")
+        self.crop_size = MODEL.get("crop_size")
+
+    def predict(self, crops: list[np.ndarray]) -> list[dict[str, float]]:
+        if not crops:
+            return []
+        import torch
+        from backend.uniform import torch_backbones as tb
+        if self.crop_size:
+            crops = [cv2.resize(c, self.crop_size, interpolation=cv2.INTER_AREA) for c in crops]
+        x = tb.to_tensor(crops, self.meta["input_size"], self.meta["mean"], self.meta["std"]).to(self.device)
+        with torch.inference_mode():
+            probs = torch.softmax(self.model(x), dim=1).cpu().numpy()
+        out = []
+        for row in probs:
+            d: dict[str, float] = {}
+            for i, p in enumerate(row):
+                d[self.labels[i]] = d.get(self.labels[i], 0.0) + float(p)
+            out.append(d)
+        return out
+
+
+def load_backend(path: str, device: str):
+    """The classifier named by model.backend (yolo_cls | torchvision)."""
+    kind = MODEL.get("backend") or "yolo_cls"
+    if kind == "torchvision":
+        return TorchvisionClassifier(path, device)
+    return TrainedClassifier(path, device)
+
+
 class StripePatternBaseline:
     """Scores narrow, regular, VERTICAL, low-saturation (black/white) stripes that
     run coherently down the torso. Plain black/white, horizontal stripes, checks,
@@ -202,7 +248,7 @@ class UniformDetector:
         self.untrained_mode = untrained_mode
         self.identity = model_identity() if path is not None else None
         if self.trained:
-            self.backend = TrainedClassifier(str(path), device)
+            self.backend = load_backend(str(path), device)
             log.info("Uniform model loaded: %s (%s) on %s", rel(path), version_label(self.identity), device)
             if self.identity and self.identity["verified"] is False:
                 log.error("Uniform model checksum MISMATCH: %s is not the approved weights (expected sha256 %s)",
@@ -242,6 +288,35 @@ class UniformDetector:
 
     BLUR_MIN = 6.0   # Laplacian variance of the torso crop below this -> too blurred
 
+    def _garment_crop(self, tile: np.ndarray, box, others: list, min_height: int) -> tuple[np.ndarray | None, str | None]:
+        """crop_mode garment: the shirt from body keypoints, letterboxed. Seated / leaning / bending people are
+        classified when their shirt is visible; only too small, occluded, hidden or blurred shirts are not judged."""
+        from backend.uniform.garment import PoseModel, garment_region, prepare
+        x1, y1, x2, y2 = box
+        H, W = tile.shape[:2]
+        if y2 - y1 < min_height:
+            return None, "too small / far"
+        torso = upper_body_box(box)
+        for o in others:
+            if o[3] > y2 and _overlap_fraction(torso, o) > 0.35:
+                return None, "occluded by another person"
+        mx, my = 0.05 * (x2 - x1), 0.05 * (y2 - y1)
+        a, b = max(0, int(x1 - mx)), max(0, int(y1 - my))
+        c, d = min(W, int(x2 + mx)), min(H, int(y2 + my))
+        person = tile[b:d, a:c]
+        if person.size == 0:
+            return None, "no crop"
+        if getattr(self, "_pose", None) is None:
+            self._pose = PoseModel(device=getattr(self.backend, "device", "cpu"))
+        gx1, gy1, gx2, gy2, _src = garment_region(person, self._pose)
+        crop = person[gy1:gy2, gx1:gx2]
+        if crop.size == 0 or crop.shape[1] < self.MIN_CROP_W or crop.shape[0] < self.MIN_CROP_W:
+            return None, "shirt not visible / low resolution"
+        g = cv2.cvtColor(cv2.resize(crop, (96, 96)), cv2.COLOR_BGR2GRAY)
+        if cv2.Laplacian(g, cv2.CV_32F).var() < self.BLUR_MIN:
+            return None, "too blurred"
+        return prepare(crop), None
+
     def classify(self, tile: np.ndarray, people: list, uniform_conf: float,
                  non_uniform_conf: float, min_height: int, occluders: list | None = None) -> None:
         """Set label / conf / reason on each Person (all inside the ROI).
@@ -253,8 +328,17 @@ class UniformDetector:
                 p.label, p.conf, p.reason = "uncertain", 0.0, "uniform model not trained"
             return
         crops, targets = [], []
+        garment = MODEL.get("crop_mode") == "garment"
         for p in people:
             others = [b for b in boxes if b is not p.box and tuple(b) != tuple(p.box)]
+            if garment:
+                crop, issue = self._garment_crop(tile, p.box, others, min_height)
+                if crop is None:
+                    p.label, p.conf, p.reason = "uncertain", 0.0, issue or "no crop"
+                    continue
+                crops.append(crop)
+                targets.append(p)
+                continue
             issue = visibility_issue(p.box, others, tile.shape, min_height)
             crop = None if issue else upper_body_crop(tile, p.box)
             if crop is not None and crop.shape[1] < self.MIN_CROP_W:
